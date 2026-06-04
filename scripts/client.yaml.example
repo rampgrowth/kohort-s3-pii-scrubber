@@ -12,9 +12,6 @@ deploy: cloudformation
 # Image publish: codebuild (no local Docker), docker (laptop), or skip (already in ECR)
 image_publish: codebuild
 # deploy: terraform
-# enable_s3_inventory: false              # terraform only; optional daily inventory
-# inventory_destination_prefix: ops/inventory/kohort-datalocker/
-# manage_ops_bucket_inventory_policy: false
 
 raw_bucket: kohort-raw-data
 source_prefix: kohort-datalocker/
@@ -22,12 +19,12 @@ dest_prefix: sanitized/kohort-datalocker/
 
 config_bucket: kohort-sanitizer-config
 ruleset_key: rulesets/kohort-datalocker.yaml
-ruleset_local_path: scrubber/rules/example-avid-datalocker-ruleset.yaml
+ruleset_local_path: scrubber/rules/example-ruleset.yaml
 
-# Kohort public image → copied into your private ECR during setup (pin tag in production)
+# Kohort public image → copied into your private ECR during setup
 public_image: public.ecr.aws/g9w2z6w5/kohort-s3-sanitizer:parquet-gzip-20260603103710
 ecr_repo: kohort-s3-sanitizer
-image_tag: parquet-gzip-20260603103710
+image_tag: latest
 
 name_prefix: kohort-s3-sanitizer          # must not collide with existing Lambda/IAM names in the account
 stack_name: kohort-s3-sanitizer

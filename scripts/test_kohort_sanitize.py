@@ -6,7 +6,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from kohort_sanitize import (
-    inventory_destination_prefix,
     load_client_config,
     render_tfvars,
     slug_from_prefix,
@@ -34,18 +33,12 @@ def test_render_tfvars():
     cfg = load_client_config(EXAMPLE)
     content = render_tfvars(cfg, "123456789012.dkr.ecr.eu-west-1.amazonaws.com/kohort-s3-sanitizer:tag")
     assert "name_prefix" in content
-    assert "enable_s3_inventory                = false" in content
+    assert "create_batch_operations_role = true" in content
     assert "lambda_image_uri" in content
-
-
-def test_inventory_destination_prefix_default():
-    cfg = load_client_config(EXAMPLE)
-    assert inventory_destination_prefix(cfg) == "ops/inventory/kohort-datalocker/"
 
 
 if __name__ == "__main__":
     test_slug_from_prefix()
     test_load_client_config_example()
     test_render_tfvars()
-    test_inventory_destination_prefix_default()
     print("ok")

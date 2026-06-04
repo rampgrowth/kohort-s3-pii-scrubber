@@ -1,0 +1,13 @@
+[
+  {"ParameterKey":"NamePrefix","ParameterValue":"kohort-s3-sanitizer"},
+  {"ParameterKey":"SourceBucketName","ParameterValue":"kohort-raw-data"},
+  {"ParameterKey":"SourcePrefix","ParameterValue":"kohort-datalocker/"},
+  {"ParameterKey":"DestBucketName","ParameterValue":"kohort-raw-data"},
+  {"ParameterKey":"CreateDestBucket","ParameterValue":"false"},
+  {"ParameterKey":"DestPrefix","ParameterValue":"sanitized/kohort-datalocker/"},
+  {"ParameterKey":"RulesetBucketName","ParameterValue":"kohort-sanitizer-config"},
+  {"ParameterKey":"RulesetObjectKey","ParameterValue":"rulesets/kohort-datalocker.yaml"},
+  {"ParameterKey":"LambdaImageUri","ParameterValue":"123456789012.dkr.ecr.eu-west-1.amazonaws.com/kohort-s3-sanitizer:latest"},
+  {"ParameterKey":"LambdaMemoryMb","ParameterValue":"2048"},
+  {"ParameterKey":"LambdaTimeoutSeconds","ParameterValue":"300"}
+]

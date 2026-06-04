@@ -2,11 +2,46 @@
 
 Step-by-step guide for deploying the scrubber with **Terraform** or **CloudFormation**, then running a backfill via **S3 Batch Operations**.
 
+## Prerequisites (local tools)
+
+The driver (`kohort_sanitize.py`) is Python; it shells out to the AWS CLI (and Terraform when `deploy: terraform`). You do **not** need local Docker if `image_publish: codebuild` (default).
+
+| Tool | Required? | Notes |
+|------|-----------|--------|
+| **Python 3.10+** | Yes | Driver uses `dataclasses.replace` and modern type hints |
+| **pip + venv** | Recommended | `scripts/bootstrap-client.sh` creates `.venv` and installs deps |
+| **AWS CLI v2** | Yes | Must match credentials for `aws_profile` in `client.yaml` |
+| **Terraform ≥ 1.5** | If `deploy: terraform` | Not needed for CloudFormation-only deploy |
+| **Docker** | Only if `image_publish: docker` | CodeBuild path mirrors the image in AWS |
+| **Bash** | Optional | Only for `bootstrap-client.sh` and other `scripts/*.sh` helpers |
+
+Python packages (installed by bootstrap or `pip install -r scripts/requirements.txt`): `boto3`, `PyYAML`.
+
+### Quick check
+
+Run from any directory before `setup`:
+
+```bash
+python3 --version          # expect 3.10 or newer
+aws --version              # AWS CLI v2
+aws sts get-caller-identity --profile "<your-profile>"   # omit --profile if using default chain
+
+# Only when deploy: terraform in client.yaml (or setup --terraform):
+terraform version        # expect >= 1.5
+
+# Only when image_publish: docker in client.yaml (or setup --docker-image):
+docker version
+```
+
+**Not required on the operator laptop:** building the scrubber image (CodeBuild does that by default), or the Python runtime inside the Lambda container (that runs in AWS).
+
+**AWS permissions:** IAM access to deploy ECR/Lambda/CloudFormation/CodeBuild/IAM (as applicable), plus S3 read on the raw bucket and read/write on the config bucket.
+
+---
+
 ## Quick start (automated)
 
-Use the driver script instead of running each step by hand.
-
-**Requires:** AWS CLI, IAM permissions for ECR/Lambda/CloudFormation/CodeBuild/IAM, and S3 access to raw + config buckets. **No local Docker** when `image_publish: codebuild` (default).
+Use the driver script instead of running each step by hand. See [Prerequisites](#prerequisites-local-tools) for local tool versions and quick checks.
 
 ```bash
 # 0. From repo root — copy config template, create venv, install deps
@@ -37,8 +72,6 @@ python3 scripts/kohort_sanitize.py --config client.yaml run \
 # 6. Check job status
 python3 scripts/kohort_sanitize.py --config client.yaml status --job-id <job-id>
 ```
-
-**Requires:** AWS CLI, IAM permissions for ECR/Lambda/CloudFormation/CodeBuild/IAM, and S3 access to raw + config buckets. **No local Docker** when `image_publish: codebuild` (default).
 
 If you previously created the batch IAM role manually (old runbook Step 3B.4), `setup` removes that role when it is not stack-managed, then CloudFormation recreates it.
 

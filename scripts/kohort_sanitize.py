@@ -46,9 +46,6 @@ class ClientConfig:
     stack_name: str
     manifests_prefix: str
     batch_reports_prefix: str
-    inventory_destination_prefix: str | None
-    enable_s3_inventory: bool
-    manage_ops_bucket_inventory_policy: bool
     lambda_memory_mb: int
     lambda_timeout_seconds: int
     terraform_dir: Path
@@ -107,13 +104,6 @@ def load_client_config(path: Path) -> ClientConfig:
         batch_reports_prefix=_ensure_trailing_slash(
             str(data.get("batch_reports_prefix", "ops/batch-reports/"))
         ),
-        inventory_destination_prefix=(
-            _ensure_trailing_slash(str(data["inventory_destination_prefix"]))
-            if data.get("inventory_destination_prefix")
-            else None
-        ),
-        enable_s3_inventory=bool(data.get("enable_s3_inventory", False)),
-        manage_ops_bucket_inventory_policy=bool(data.get("manage_ops_bucket_inventory_policy", False)),
         lambda_memory_mb=int(data.get("lambda_memory_mb", 2048)),
         lambda_timeout_seconds=int(data.get("lambda_timeout_seconds", 300)),
         terraform_dir=terraform_dir,
@@ -162,13 +152,6 @@ def lambda_image_uri(cfg: ClientConfig) -> str:
 
 def ruleset_uri(cfg: ClientConfig) -> str:
     return f"s3://{cfg.config_bucket}/{cfg.ruleset_key}"
-
-
-def inventory_destination_prefix(cfg: ClientConfig) -> str:
-    if cfg.inventory_destination_prefix:
-        return cfg.inventory_destination_prefix
-    slug = cfg.source_prefix.strip("/")
-    return f"ops/inventory/{slug}/" if slug else "ops/inventory/"
 
 
 def stack_output(cfg: ClientConfig, key: str) -> str:
@@ -381,27 +364,40 @@ def batch_role_name(cfg: ClientConfig) -> str:
     return f"{cfg.name_prefix}-batch-role"
 
 
-def stack_manages_batch_role(cfg: ClientConfig) -> bool:
+def scrubber_function_name(cfg: ClientConfig) -> str:
+    return f"{cfg.name_prefix}-scrubber"
+
+
+def scrubber_log_group_name(cfg: ClientConfig) -> str:
+    return f"/aws/lambda/{scrubber_function_name(cfg)}"
+
+
+def batch_invoke_policy_name(cfg: ClientConfig) -> str:
+    return f"{cfg.name_prefix}-batch-invoke"
+
+
+_CFN_READY_STATUSES = frozenset({"CREATE_COMPLETE", "UPDATE_COMPLETE"})
+
+
+def stack_resource_ready(cfg: ClientConfig, logical_id: str) -> bool:
+    """True when the stack already owns a resource in a stable state."""
     cfn = _session(cfg).client("cloudformation")
     try:
         resources = cfn.describe_stack_resources(StackName=cfg.stack_name)["StackResources"]
     except cfn.exceptions.ClientError:
         return False
     for resource in resources:
-        if resource.get("LogicalResourceId") == "BatchOperationsRole":
-            return resource.get("ResourceStatus") in ("CREATE_COMPLETE", "UPDATE_COMPLETE")
+        if resource.get("LogicalResourceId") == logical_id:
+            return resource.get("ResourceStatus") in _CFN_READY_STATUSES
     return False
 
 
-def remove_unmanaged_batch_role(cfg: ClientConfig) -> None:
-    """Delete a manually created batch role so CloudFormation can own it."""
+def stack_manages_batch_role(cfg: ClientConfig) -> bool:
+    return stack_resource_ready(cfg, "BatchOperationsRole")
+
+
+def _delete_iam_role(iam: Any, role_name: str) -> None:
     from botocore.exceptions import ClientError
-
-    iam = _session(cfg).client("iam")
-    role_name = batch_role_name(cfg)
-
-    if stack_manages_batch_role(cfg):
-        return
 
     try:
         iam.get_role(RoleName=role_name)
@@ -410,26 +406,109 @@ def remove_unmanaged_batch_role(cfg: ClientConfig) -> None:
             return
         raise
 
-    print(
-        f"Removing pre-existing batch role {role_name!r} (not managed by stack) "
-        "so CloudFormation can create it..."
-    )
-
+    print(f"Removing pre-existing IAM role {role_name!r} so CloudFormation can create it...")
     for policy in iam.list_attached_role_policies(RoleName=role_name).get("AttachedPolicies", []):
         iam.detach_role_policy(RoleName=role_name, PolicyArn=policy["PolicyArn"])
-
     for policy_name in iam.list_role_policies(RoleName=role_name).get("PolicyNames", []):
         iam.delete_role_policy(RoleName=role_name, PolicyName=policy_name)
-
     iam.delete_role(RoleName=role_name)
     print(f"Deleted role: {role_name}")
+
+
+def _delete_managed_policy_by_name(iam: Any, policy_name: str) -> None:
+    from botocore.exceptions import ClientError
+
+    for policy in iam.list_policies(Scope="Local").get("Policies", []):
+        if policy.get("PolicyName") != policy_name:
+            continue
+        arn = policy["Arn"]
+        for role in iam.list_entities_for_policy(PolicyArn=arn, EntityFilter="Role").get(
+            "PolicyRoles", []
+        ):
+            iam.detach_role_policy(RoleName=role["RoleName"], PolicyArn=arn)
+        print(f"Removing pre-existing IAM policy {policy_name!r} so CloudFormation can create it...")
+        iam.delete_policy(PolicyArn=arn)
+        print(f"Deleted policy: {policy_name}")
+        return
+
+
+def remove_stuck_cfn_stack(cfg: ClientConfig) -> None:
+    """Delete stacks left in non-deployable states after a failed changeset."""
+    from botocore.exceptions import ClientError
+
+    cfn = _session(cfg).client("cloudformation")
+    try:
+        stack = cfn.describe_stacks(StackName=cfg.stack_name)["Stacks"][0]
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "ValidationError":
+            return
+        raise
+
+    status = stack["StackStatus"]
+    if status not in (
+        "REVIEW_IN_PROGRESS",
+        "ROLLBACK_COMPLETE",
+        "CREATE_FAILED",
+        "ROLLBACK_FAILED",
+        "DELETE_FAILED",
+    ):
+        return
+
+    print(f"Deleting CloudFormation stack {cfg.stack_name!r} (status={status}) before redeploy...")
+    cfn.delete_stack(StackName=cfg.stack_name)
+    waiter = cfn.get_waiter("stack_delete_complete")
+    waiter.wait(StackName=cfg.stack_name)
+    print(f"Deleted stack: {cfg.stack_name}")
+
+
+def remove_orphan_cfn_resources(cfg: ClientConfig) -> None:
+    """Delete leftover Terraform/manual resources that block CFN named-resource creation."""
+    from botocore.exceptions import ClientError
+
+    lam = _session(cfg).client("lambda")
+    logs = _session(cfg).client("logs")
+    iam = _session(cfg).client("iam")
+
+    fn = scrubber_function_name(cfg)
+    if not stack_resource_ready(cfg, "ScrubberFunction"):
+        try:
+            lam.delete_function(FunctionName=fn)
+            print(f"Deleted Lambda function: {fn}")
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") != "ResourceNotFoundException":
+                raise
+
+    if not stack_resource_ready(cfg, "ScrubberLogGroup"):
+        try:
+            logs.delete_log_group(logGroupName=scrubber_log_group_name(cfg))
+            print(f"Deleted log group: {scrubber_log_group_name(cfg)}")
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") != "ResourceNotFoundException":
+                raise
+
+    if not stack_resource_ready(cfg, "ScrubberRole"):
+        _delete_iam_role(iam, fn)
+
+    if not stack_resource_ready(cfg, "BatchOperationsRole"):
+        _delete_iam_role(iam, batch_role_name(cfg))
+
+    if not stack_resource_ready(cfg, "BatchInvokePolicy"):
+        _delete_managed_policy_by_name(iam, batch_invoke_policy_name(cfg))
+
+
+def remove_unmanaged_batch_role(cfg: ClientConfig) -> None:
+    """Delete a manually created batch role so CloudFormation can own it."""
+    if stack_manages_batch_role(cfg):
+        return
+    _delete_iam_role(_session(cfg).client("iam"), batch_role_name(cfg))
 
 
 def cmd_deploy_stack(cfg: ClientConfig, image_uri: str) -> None:
     if not CFN_TEMPLATE.exists():
         raise FileNotFoundError(f"CloudFormation template not found: {CFN_TEMPLATE}")
 
-    remove_unmanaged_batch_role(cfg)
+    remove_stuck_cfn_stack(cfg)
+    remove_orphan_cfn_resources(cfg)
 
     params = {
         "NamePrefix": cfg.name_prefix,
@@ -483,8 +562,6 @@ def cmd_deploy_stack(cfg: ClientConfig, image_uri: str) -> None:
 
 
 def render_tfvars(cfg: ClientConfig, image_uri: str) -> str:
-    inv_prefix = inventory_destination_prefix(cfg)
-    hcl_bool = lambda v: "true" if v else "false"
     return "\n".join(
         [
             "# Generated by kohort_sanitize.py — edit client.yaml and re-run setup.",
@@ -500,13 +577,10 @@ def render_tfvars(cfg: ClientConfig, image_uri: str) -> str:
             f"ruleset_uri      = {json.dumps(ruleset_uri(cfg))}",
             f"lambda_image_uri = {json.dumps(image_uri)}",
             "",
-            f"ops_bucket_name                    = {json.dumps(cfg.config_bucket)}",
-            f"inventory_destination_prefix       = {json.dumps(inv_prefix)}",
-            f"manifests_prefix                   = {json.dumps(cfg.manifests_prefix)}",
-            f"batch_reports_prefix               = {json.dumps(cfg.batch_reports_prefix)}",
-            f"enable_s3_inventory                = {hcl_bool(cfg.enable_s3_inventory)}",
-            f"create_batch_operations_role       = true",
-            f"manage_ops_bucket_inventory_policy = {hcl_bool(cfg.manage_ops_bucket_inventory_policy)}",
+            f"ops_bucket_name              = {json.dumps(cfg.config_bucket)}",
+            f"manifests_prefix             = {json.dumps(cfg.manifests_prefix)}",
+            f"batch_reports_prefix         = {json.dumps(cfg.batch_reports_prefix)}",
+            f"create_batch_operations_role = true",
             "",
             f"lambda_memory_mb       = {cfg.lambda_memory_mb}",
             f"lambda_timeout_seconds = {cfg.lambda_timeout_seconds}",
@@ -551,13 +625,6 @@ def cmd_deploy_terraform(cfg: ClientConfig, image_uri: str) -> None:
 
     print(f"Lambda ARN: {get_lambda_arn(cfg)}")
     print(f"Batch role ARN: {get_batch_role_arn(cfg)}")
-    if cfg.enable_s3_inventory and not cfg.manage_ops_bucket_inventory_policy:
-        policy = terraform_output(cfg, "inventory_destination_policy_json")
-        print(
-            "S3 Inventory enabled but manage_ops_bucket_inventory_policy=false.\n"
-            "Apply this bucket policy on the config bucket if inventory reports fail:\n"
-            f"{policy}"
-        )
 
 
 def cmd_deploy_infra(cfg: ClientConfig, image_uri: str) -> None:
