@@ -1,0 +1,7 @@
+﻿# Example S3 Batch manifest (headerless). One row per object: bucket,key
+# Do NOT include a header row in the file you upload to S3.
+#
+# pfm-staging-client-raw-data,avid-datalocker/t=installs/dt=2025-09-28/h=0/part-00000-024bfde5-c1c9-434e-9d67-b0e60a6ff9e4-c000.gz.parquet
+# pfm-staging-client-raw-data,avid-datalocker/t=sessions/dt=2025-09-28/h=0/part-00000-867b8f14-3770-4c8b-a7ed-530c4d477757-c000.gz.parquet
+
+pfm-staging-client-raw-data,avid-datalocker/t=installs/dt=2025-09-28/h=0/part-00000-024bfde5-c1c9-434e-9d67-b0e60a6ff9e4-c000.gz.parquet
