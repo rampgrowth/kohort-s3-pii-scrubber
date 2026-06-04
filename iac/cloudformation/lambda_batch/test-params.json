@@ -1,11 +1,11 @@
 [
   {"ParameterKey":"NamePrefix","ParameterValue":"kohort-s3-sanitizer-cfn"},
-  {"ParameterKey":"SourceBucketName","ParameterValue":"kohort-s3-sanitizer-raw-539216091422-20260528154218"},
+  {"ParameterKey":"SourceBucketName","ParameterValue":"kohort-s3-sanitizer-raw"},
   {"ParameterKey":"SourcePrefix","ParameterValue":"raw/"},
-  {"ParameterKey":"DestBucketName","ParameterValue":"kohort-s3-sanitizer-sanitized-539216091422-20260528154218"},
+  {"ParameterKey":"DestBucketName","ParameterValue":"kohort-s3-sanitizer-sanitized"},
   {"ParameterKey":"CreateDestBucket","ParameterValue":"false"},
   {"ParameterKey":"DestPrefix","ParameterValue":"sanitized/cfn-test/"},
-  {"ParameterKey":"RulesetBucketName","ParameterValue":"kohort-s3-sanitizer-config-539216091422-20260528154218"},
+  {"ParameterKey":"RulesetBucketName","ParameterValue":"kohort-s3-sanitizer-config"},
   {"ParameterKey":"RulesetObjectKey","ParameterValue":"rules/example-ruleset.yaml"},
-  {"ParameterKey":"LambdaImageUri","ParameterValue":"539216091422.dkr.ecr.eu-west-1.amazonaws.com/kohort-s3-sanitizer:fixcsvgz-20260529125504"}
+  {"ParameterKey":"LambdaImageUri","ParameterValue":"123456789012.dkr.ecr.eu-west-1.amazonaws.com/kohort-s3-sanitizer:latest"}
 ]
