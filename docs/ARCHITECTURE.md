@@ -4,8 +4,8 @@
 
 ```mermaid
 flowchart LR
-  rawS3[RawS3Bucket] --> inventory[S3Inventory]
-  inventory --> manifest[InventoryManifest]
+  rawS3[RawS3Bucket] --> manifestGen[PrefixManifest]
+  manifestGen --> manifest[BatchManifestCSV]
   manifest --> batchJob[S3BatchOperations]
   batchJob --> lambda[LambdaScrubber]
   lambda --> sanitizedS3[SanitizedS3Bucket]
@@ -13,7 +13,7 @@ flowchart LR
   ruleset[RulesetS3] --> lambda
 ```
 
-1. **S3 Inventory** lists objects under the raw prefix (daily manifest).
+1. A **prefix manifest** (CSV of bucket + key) is generated or uploaded to the config bucket.
 2. **S3 Batch Operations** reads the manifest and invokes the scrubber **Lambda** once per object.
 3. Lambda reads the source object, drops configured columns, writes to the sanitized bucket with the same relative key (optionally under a different prefix).
 4. Batch writes a **completion report** listing successes and failures.
@@ -30,7 +30,7 @@ flowchart LR
 |-----------|----------------|
 | Lambda container (`scrubber/container`) | Format detection, rules resolution, S3 read/write |
 | Ruleset (S3) | Column drop lists per prefix |
-| Terraform / CloudFormation | IAM, Lambda, optional buckets, inventory config |
+| Terraform / CloudFormation | IAM, Lambda, optional buckets, batch role |
 | S3 Batch job (per backfill) | Fan-out orchestration and reporting |
 
 ## Performance and cost

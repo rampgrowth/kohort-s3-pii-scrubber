@@ -20,7 +20,6 @@ data "aws_iam_policy_document" "batch_s3" {
       "s3:GetObject",
     ]
     resources = [
-      "arn:aws:s3:::${local.ops_bucket}/${local.inventory_prefix}*",
       "arn:aws:s3:::${local.ops_bucket}/${local.manifests_prefix}*",
     ]
   }

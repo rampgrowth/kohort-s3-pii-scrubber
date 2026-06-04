@@ -50,7 +50,7 @@ The sections below are the **manual reference** (Terraform path, console steps, 
 
 | Choose your deploy path | Section | Automated |
 |-------------------------|---------|-----------|
-| **Terraform** (Lambda + inventory + batch IAM role) | [Step 3A](#step-3a--deploy-with-terraform) | `deploy: terraform` or `setup --terraform` |
+| **Terraform** (Lambda + batch IAM role) | [Step 3A](#step-3a--deploy-with-terraform) | `deploy: terraform` or `setup --terraform` |
 | **CloudFormation** (Lambda + scrubber IAM + batch role) | [Step 3B](#step-3b--deploy-with-cloudformation) | `deploy: cloudformation` (default) |
 
 Steps 1–2 (image + config bucket) and Steps 4–6 (Batch job, monitor, validate) are the same for both paths.
@@ -67,7 +67,7 @@ Fill in this checklist before deploy (`terraform apply` or `cloudformation deplo
 | **Region** | Same region as S3 buckets | `eu-west-1` |
 | **AWS profile** | CLI profile with deploy permissions | `staging` |
 | **Raw bucket** | Bucket containing source objects | `kohort-raw-data` |
-| **Raw prefix** | Prefix to scope IAM + inventory (trailing `/`) | `kohort-datalocker/` |
+| **Raw prefix** | Prefix to scope IAM and manifests (trailing `/`) | `kohort-datalocker/` |
 | **Config bucket** | Constant bucket for rulesets + ops artifacts (see naming below) | `kohort-sanitizer-config` |
 | **Ruleset key** | Path to YAML ruleset in ruleset bucket | `rulesets/kohort-datalocker.yaml` |
 | **Lambda image** | Your ECR URI after Step 1 | `123456789012.dkr.ecr.eu-west-1.amazonaws.com/kohort-s3-sanitizer:<tag>` |
@@ -97,7 +97,7 @@ One **config bucket per AWS account** (shared across datasets in that account). 
 
 **Generic** : `kohort-sanitizer-config`
 
-Raw data stays in buckets like `kohort-raw-data`. Config holds rulesets, manifests, inventory, and batch reports only.
+Raw data stays in buckets like `kohort-raw-data`. Config holds rulesets, manifests, and batch reports only.
 
 ### Ops layout (config bucket)
 
@@ -106,7 +106,6 @@ Raw data stays in buckets like `kohort-raw-data`. Config holds rulesets, manifes
 | Ruleset | `s3://kohort-sanitizer-config/rulesets/kohort-datalocker.yaml` |
 | Custom manifests | `s3://kohort-sanitizer-config/ops/manifests/<job>.csv` |
 | Batch reports | `s3://kohort-sanitizer-config/ops/batch-reports/` |
-| Inventory (daily) | `s3://kohort-sanitizer-config/ops/inventory/kohort-datalocker/` |
 
 ---
 
@@ -214,7 +213,7 @@ Edit `terraform.tfvars` (example):
 ```hcl
 name_prefix        = "kohort-s3-sanitizer"
 source_bucket_name = "kohort-raw-data"
-source_prefix      = "kohort-datalocker/"   # IAM + inventory scope
+source_prefix      = "kohort-datalocker/"   # IAM scope
 
 dest_bucket_name   = "kohort-raw-data"
 create_dest_bucket = false
@@ -223,18 +222,11 @@ dest_prefix        = "sanitized/kohort-datalocker/"  # output: sanitized/kohort-
 ruleset_uri        = "s3://kohort-sanitizer-config/rulesets/kohort-datalocker.yaml"
 lambda_image_uri   = "123456789012.dkr.ecr.eu-west-1.amazonaws.com/kohort-s3-sanitizer:<tag>"
 
-ops_bucket_name                    = "kohort-sanitizer-config"
-inventory_destination_prefix         = "ops/inventory/kohort-datalocker/"
-manifests_prefix                     = "ops/manifests/"
-batch_reports_prefix                 = "ops/batch-reports/"
-enable_s3_inventory                  = true
-create_batch_operations_role         = true
-manage_ops_bucket_inventory_policy   = false   # true only if ops bucket has no conflicting policy
+ops_bucket_name              = "kohort-sanitizer-config"
+manifests_prefix             = "ops/manifests/"
+batch_reports_prefix         = "ops/batch-reports/"
+create_batch_operations_role = true
 ```
-
-> If `manage_ops_bucket_inventory_policy = false`, after apply run:
-> `terraform output -raw inventory_destination_policy_json`
-> and attach that statement to the **config bucket** (`kohort-sanitizer-config`) policy manually.
 
 ### 3A.2 Init, plan, apply
 
@@ -355,7 +347,7 @@ aws iam create-role --role-name "$BATCH_ROLE_NAME" \
     }]
   }' 2>/dev/null || true
 
-# Inline policy: read manifests + inventory under config bucket; write batch reports
+# Inline policy: read manifests under config bucket; write batch reports
 aws iam put-role-policy --role-name "$BATCH_ROLE_NAME" \
   --policy-name "${NAME_PREFIX}-batch-s3" \
   --policy-document "{
@@ -365,10 +357,7 @@ aws iam put-role-policy --role-name "$BATCH_ROLE_NAME" \
         \"Sid\": \"ReadManifests\",
         \"Effect\": \"Allow\",
         \"Action\": [\"s3:GetObject\"],
-        \"Resource\": [
-          \"arn:aws:s3:::${CONFIG_BUCKET}/ops/manifests/*\",
-          \"arn:aws:s3:::${CONFIG_BUCKET}/ops/inventory/*\"
-        ]
+        \"Resource\": \"arn:aws:s3:::${CONFIG_BUCKET}/ops/manifests/*\"
       },
       {
         \"Sid\": \"WriteReports\",
@@ -389,16 +378,6 @@ echo "BATCH_ROLE_ARN=$BATCH_ROLE_ARN"
 ```
 
 Or re-deploy with the current `template.yaml` / run `kohort_sanitize.py setup`.
-
-### 3B.5 S3 Inventory (optional)
-
-CloudFormation does not configure inventory. Either:
-
-- Use **Terraform** for inventory + batch role only, or
-- Create inventory on the raw bucket in the S3 console (destination: config bucket, prefix `ops/inventory/kohort-datalocker/`), or
-- Skip inventory and use **custom manifests** in Step 4.
-
----
 
 ## Step 4 — Run a scrub job (S3 Batch)
 

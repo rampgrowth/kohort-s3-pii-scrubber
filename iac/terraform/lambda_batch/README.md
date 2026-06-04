@@ -5,8 +5,9 @@ Deploys:
 - Scrubber Lambda (container image) + execution IAM
 - Optional destination bucket
 - Policy allowing S3 Batch to invoke Lambda
-- **S3 Inventory** on the source prefix (optional; daily → ops bucket)
-- **S3 Batch Operations IAM role** (read manifests/reports, invoke Lambda)
+- **S3 Batch Operations IAM role** (read manifests, write reports, invoke Lambda)
+
+Batch jobs use **prefix manifests** (`scripts/generate_batch_manifest.py` or `kohort_sanitize.py run`), not S3 Inventory.
 
 ## Automated client setup
 
@@ -46,8 +47,7 @@ module "sanitizer" {
   # Recommended: pull Kohort public image and push into your ECR, then reference it here.
   lambda_image_uri = "123456789012.dkr.ecr.eu-west-1.amazonaws.com/kohort-s3-sanitizer:<version-tag>"
 
-  manage_ops_bucket_inventory_policy = true  # false if ops bucket has existing policy
-  reserved_concurrent_executions       = 500
+  reserved_concurrent_executions = 500
 }
 ```
 
@@ -56,9 +56,8 @@ Clients should not need to build the image. Prefer **pull public → push to you
 ## After apply
 
 1. Push a new image tag to your ECR; set `lambda_image_uri` (pin the tag).
-2. Ensure ops bucket allows inventory writes (`manage_ops_bucket_inventory_policy` or manual policy from output `inventory_destination_policy_json`).
-3. Wait for inventory under `inventory/raw/` **or** upload a custom manifest under `manifests/`.
-4. Create an S3 Batch job using `batch_operations_role_arn` and `lambda_function_arn` (see [scripts/create-batch-job.example.sh](../../../scripts/create-batch-job.example.sh)).
+2. Upload or generate a manifest under `manifests/` (see `kohort_sanitize.py run`).
+3. Create an S3 Batch job using `batch_operations_role_arn` and `lambda_function_arn` (see [scripts/create-batch-job.example.sh](../../../scripts/create-batch-job.example.sh)).
 
 ## Outputs
 
@@ -67,6 +66,5 @@ Clients should not need to build the image. Prefer **pull public → push to you
 | `lambda_function_arn` | S3 Batch job Lambda target |
 | `batch_operations_role_arn` | S3 Batch job IAM role |
 | `batch_operations_policy_arn` | Attached to batch role automatically |
-| `inventory_destination_policy_json` | Manual bucket policy when not managed by Terraform |
 
 **Full step-by-step commands (init, apply, manifests, Batch job):** [../../../docs/RUNBOOK.md](../../../docs/RUNBOOK.md).

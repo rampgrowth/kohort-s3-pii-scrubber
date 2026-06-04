@@ -29,16 +29,6 @@ output "batch_operations_role_arn" {
 }
 
 output "ops_bucket_name" {
-  description = "Bucket used for inventory, manifests, and batch reports."
+  description = "Bucket used for manifests and batch reports."
   value       = local.ops_bucket
-}
-
-output "inventory_destination_prefix" {
-  description = "Prefix where S3 Inventory manifests are delivered."
-  value       = local.inventory_prefix
-}
-
-output "inventory_destination_policy_json" {
-  description = "Bucket policy document for ops bucket (apply manually if manage_ops_bucket_inventory_policy is false)."
-  value       = try(data.aws_iam_policy_document.ops_inventory_destination[0].json, null)
 }

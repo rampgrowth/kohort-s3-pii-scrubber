@@ -35,4 +35,4 @@ python3 scripts/kohort_sanitize.py --config client.yaml setup
 3. Deploy stack (Step 3B) — batch role is included in current template
 4. Run Batch jobs (Step 4) — or `kohort_sanitize.py run --prefix ...`
 
-For **S3 Inventory**, use [Terraform](../../terraform/lambda_batch/README.md) (optional; manifest-based jobs do not require inventory).
+Batch jobs use **prefix manifests** (`kohort_sanitize.py run`); S3 Inventory is not used.

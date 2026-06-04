@@ -71,11 +71,6 @@ Parameters:
     Default: ops/batch-reports/
     Description: Prefix in the config bucket for Batch completion reports.
 
-  InventoryPrefix:
-    Type: String
-    Default: ops/inventory/
-    Description: Optional inventory report prefix (Batch role read access only).
-
 Conditions:
   CreateDestBucket: !Equals [!Ref CreateDestBucket, "true"]
   UseKms: !Not [!Equals [!Ref KmsKeyArn, ""]]
@@ -216,9 +211,7 @@ Resources:
                 Effect: Allow
                 Action:
                   - s3:GetObject
-                Resource:
-                  - !Sub arn:aws:s3:::${RulesetBucketName}/${ManifestsPrefix}*
-                  - !Sub arn:aws:s3:::${RulesetBucketName}/${InventoryPrefix}*
+                Resource: !Sub arn:aws:s3:::${RulesetBucketName}/${ManifestsPrefix}*
               - Sid: WriteReports
                 Effect: Allow
                 Action:

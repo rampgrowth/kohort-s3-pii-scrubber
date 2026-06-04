@@ -8,11 +8,8 @@
   ruleset_bucket = split("/", trimprefix(var.ruleset_uri, "s3://"))[0]
   ops_bucket     = coalesce(var.ops_bucket_name, local.ruleset_bucket)
 
-  inventory_prefix = var.inventory_destination_prefix != "" && !endswith(var.inventory_destination_prefix, "/") ? "${var.inventory_destination_prefix}/" : var.inventory_destination_prefix
   batch_reports_prefix = var.batch_reports_prefix != "" && !endswith(var.batch_reports_prefix, "/") ? "${var.batch_reports_prefix}/" : var.batch_reports_prefix
   manifests_prefix     = var.manifests_prefix != "" && !endswith(var.manifests_prefix, "/") ? "${var.manifests_prefix}/" : var.manifests_prefix
-
-  inventory_id = coalesce(var.inventory_id, "${var.name_prefix}-raw-inventory")
 
   common_tags = merge(var.tags, {
     Project = "kohort-s3-sanitizer"
