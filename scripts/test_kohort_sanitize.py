@@ -25,6 +25,7 @@ def test_load_client_config_example():
     cfg = load_client_config(EXAMPLE)
     assert cfg.raw_bucket == "kohort-raw-data"
     assert cfg.deploy == "cloudformation"
+    assert cfg.image_publish == "codebuild"
     assert cfg.manifests_prefix == "ops/manifests/"
     assert cfg.ruleset_local_path.exists()
 

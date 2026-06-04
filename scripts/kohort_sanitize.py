@@ -22,6 +22,7 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CFN_TEMPLATE = REPO_ROOT / "iac/cloudformation/lambda_batch/template.yaml"
+IMAGE_MIRROR_CFN = REPO_ROOT / "iac/cloudformation/image_mirror/template.yaml"
 TERRAFORM_DIR = REPO_ROOT / "iac/terraform/lambda_batch"
 SCRIPTS_DIR = Path(__file__).resolve().parent
 
@@ -40,6 +41,7 @@ class ClientConfig:
     public_image: str
     ecr_repo: str
     image_tag: str
+    image_publish: str  # codebuild | docker | skip
     name_prefix: str
     stack_name: str
     manifests_prefix: str
@@ -76,6 +78,10 @@ def load_client_config(path: Path) -> ClientConfig:
     if deploy not in ("cloudformation", "terraform"):
         raise ValueError(f"deploy must be cloudformation or terraform, got {deploy!r}")
 
+    image_publish = str(data.get("image_publish", "codebuild")).lower()
+    if image_publish not in ("codebuild", "docker", "skip"):
+        raise ValueError(f"image_publish must be codebuild, docker, or skip, got {image_publish!r}")
+
     tf_dir = data.get("terraform_dir", "iac/terraform/lambda_batch")
     terraform_dir = Path(str(tf_dir))
     if not terraform_dir.is_absolute():
@@ -94,6 +100,7 @@ def load_client_config(path: Path) -> ClientConfig:
         public_image=public_image,
         ecr_repo=str(data.get("ecr_repo", "kohort-s3-sanitizer")),
         image_tag=image_tag,
+        image_publish=image_publish,
         name_prefix=str(data.get("name_prefix", "kohort-s3-sanitizer")),
         stack_name=str(data.get("stack_name", data.get("name_prefix", "kohort-s3-sanitizer"))),
         manifests_prefix=_ensure_trailing_slash(str(data.get("manifests_prefix", "ops/manifests/"))),
@@ -199,20 +206,97 @@ def get_batch_role_arn(cfg: ClientConfig) -> str:
     return stack_output(cfg, "BatchOperationsRoleArn")
 
 
+def image_mirror_stack_name(cfg: ClientConfig) -> str:
+    return f"{cfg.name_prefix}-image-mirror"
+
+
+def cmd_deploy_image_mirror_stack(cfg: ClientConfig) -> str:
+    """Deploy CodeBuild + ECR stack for mirroring the public scrubber image."""
+    if not IMAGE_MIRROR_CFN.exists():
+        raise FileNotFoundError(f"Image mirror template not found: {IMAGE_MIRROR_CFN}")
+
+    stack = image_mirror_stack_name(cfg)
+    params = {
+        "NamePrefix": cfg.name_prefix,
+        "PublicImage": cfg.public_image,
+        "EcrRepo": cfg.ecr_repo,
+        "ImageTag": cfg.image_tag,
+    }
+    param_file = Path("/tmp/kohort-image-mirror-cfn-params.json")
+    param_file.write_text(
+        json.dumps([{"ParameterKey": k, "ParameterValue": v} for k, v in params.items()]),
+        encoding="utf-8",
+    )
+
+    print(f"Deploying image mirror stack: {stack}")
+    result = _run(
+        [
+            "aws",
+            "cloudformation",
+            "deploy",
+            "--stack-name",
+            stack,
+            "--template-file",
+            str(IMAGE_MIRROR_CFN),
+            "--parameter-overrides",
+            f"file://{param_file}",
+            "--capabilities",
+            "CAPABILITY_NAMED_IAM",
+            "--no-fail-on-empty-changeset",
+            "--region",
+            cfg.region,
+        ],
+        cfg,
+        check=False,
+    )
+    if result.returncode != 0:
+        print(result.stderr or result.stdout, file=sys.stderr)
+        raise RuntimeError(f"Image mirror stack deploy failed (exit {result.returncode})")
+
+    return f"{cfg.name_prefix}-image-mirror"
+
+
+def cmd_run_codebuild_mirror(cfg: ClientConfig, project_name: str) -> None:
+    """Start CodeBuild image mirror and wait until SUCCEEDED."""
+    codebuild = _session(cfg).client("codebuild")
+
+    print(f"Starting CodeBuild project: {project_name}")
+    build = codebuild.start_build(projectName=project_name)
+    build_id = build["build"]["id"]
+    print(f"Build id: {build_id}")
+
+    while True:
+        detail = codebuild.batch_get_builds(ids=[build_id])["builds"][0]
+        status = detail.get("buildStatus")
+        phase = detail.get("currentPhase", "")
+        print(f"  status={status} phase={phase}")
+        if status == "SUCCEEDED":
+            return
+        if status in ("FAILED", "FAULT", "STOPPED", "TIMED_OUT"):
+            logs = detail.get("logs", {}).get("deepLink", "")
+            raise RuntimeError(f"CodeBuild image mirror failed: {status}. Logs: {logs}")
+        time.sleep(15)
+
+
+def publish_image(cfg: ClientConfig, *, force_skip: bool = False) -> str:
+    """Mirror public image to private ECR; return Lambda image URI."""
+    uri = lambda_image_uri(cfg)
+    if force_skip or cfg.image_publish == "skip":
+        print(f"Skipping image publish; using {uri}")
+        return uri
+    if cfg.image_publish == "codebuild":
+        project = cmd_deploy_image_mirror_stack(cfg)
+        cmd_run_codebuild_mirror(cfg, project)
+        print(f"Lambda image: {uri}")
+        return uri
+    return cmd_mirror_image(cfg)
+
+
 def cmd_mirror_image(cfg: ClientConfig) -> str:
     uri = lambda_image_uri(cfg)
     registry = f"{account_id(cfg)}.dkr.ecr.{cfg.region}.amazonaws.com"
 
     steps: list[tuple[str, list[str]]] = [
-        (
-            "public ECR login",
-            [
-                "sh",
-                "-c",
-                "aws ecr-public get-login-password --region us-east-1 | "
-                "docker login --username AWS --password-stdin public.ecr.aws",
-            ],
-        ),
         (
             "private ECR login",
             [
@@ -483,16 +567,22 @@ def cmd_deploy_infra(cfg: ClientConfig, image_uri: str) -> None:
         cmd_deploy_stack(cfg, image_uri)
 
 
-def cmd_setup(cfg: ClientConfig, *, skip_image: bool, deploy: str | None = None) -> None:
+def cmd_setup(
+    cfg: ClientConfig,
+    *,
+    skip_image: bool,
+    deploy: str | None = None,
+    image_publish: str | None = None,
+) -> None:
     if deploy:
         cfg = replace(cfg, deploy=deploy)
-
-    print(f"=== Kohort S3 Sanitizer setup ({cfg.deploy}) ===")
+    if image_publish:
+        cfg = replace(cfg, image_publish=image_publish)
     if skip_image:
-        image_uri = lambda_image_uri(cfg)
-        print(f"Skipping image mirror; using {image_uri}")
-    else:
-        image_uri = cmd_mirror_image(cfg)
+        cfg = replace(cfg, image_publish="skip")
+
+    print(f"=== Kohort S3 Sanitizer setup ({cfg.deploy}, image={cfg.image_publish}) ===")
+    image_uri = publish_image(cfg)
     cmd_bootstrap_config(cfg)
     cmd_deploy_infra(cfg, image_uri)
     print("Setup complete.")
@@ -608,11 +698,25 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    setup = sub.add_parser("setup", help="Mirror image, bootstrap config bucket, deploy infrastructure.")
+    setup = sub.add_parser("setup", help="Publish image, bootstrap config bucket, deploy infrastructure.")
     setup.add_argument(
         "--skip-image",
         action="store_true",
-        help="Skip docker pull/push (image already in your ECR).",
+        help="Skip image publish (image already in your ECR). Same as image_publish: skip.",
+    )
+    setup.add_argument(
+        "--codebuild-image",
+        action="store_const",
+        const="codebuild",
+        dest="image_publish",
+        help="Publish image via CodeBuild in AWS (no local Docker).",
+    )
+    setup.add_argument(
+        "--docker-image",
+        action="store_const",
+        const="docker",
+        dest="image_publish",
+        help="Publish image via local Docker pull/push.",
     )
     setup.add_argument(
         "--terraform",
@@ -658,7 +762,12 @@ def main(argv: list[str] | None = None) -> int:
     cfg = load_client_config(config_path)
 
     if args.command == "setup":
-        cmd_setup(cfg, skip_image=args.skip_image, deploy=getattr(args, "deploy", None))
+        cmd_setup(
+            cfg,
+            skip_image=args.skip_image,
+            deploy=getattr(args, "deploy", None),
+            image_publish=getattr(args, "image_publish", None),
+        )
         return 0
     if args.command == "run":
         cmd_run(cfg, args.prefix, dry_run=args.dry_run)

@@ -1,0 +1,136 @@
+﻿AWSTemplateFormatVersion: "2010-09-09"
+Description: Kohort S3 Sanitizer - CodeBuild project to mirror the public scrubber image into private ECR
+
+Parameters:
+  NamePrefix:
+    Type: String
+    Default: kohort-s3-sanitizer
+
+  PublicImage:
+    Type: String
+    Description: Source image on Amazon ECR Public (public.ecr.aws/...).
+
+  EcrRepo:
+    Type: String
+    Default: kohort-s3-sanitizer
+    Description: Private ECR repository name in this account/region.
+
+  ImageTag:
+    Type: String
+    Description: Tag for the destination image in private ECR.
+
+Resources:
+  EcrRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Ref EcrRepo
+      ImageScanningConfiguration:
+        ScanOnPush: true
+
+  CodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${NamePrefix}-image-mirror-codebuild
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: image-mirror
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: EcrPublicAuth
+                Effect: Allow
+                Action:
+                  - ecr-public:GetAuthorizationToken
+                Resource: "*"
+              - Sid: EcrPublicBearer
+                Effect: Allow
+                Action:
+                  - sts:GetServiceBearerToken
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    sts:AWSServiceName: ecr-public.amazonaws.com
+              - Sid: EcrPublicPull
+                Effect: Allow
+                Action:
+                  - ecr-public:BatchCheckLayerAvailability
+                  - ecr-public:GetDownloadUrlForLayer
+                  - ecr-public:BatchGetImage
+                Resource: "*"
+              - Sid: EcrPrivateAuth
+                Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                Resource: "*"
+              - Sid: EcrPrivatePush
+                Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                  - ecr:PutImage
+                  - ecr:InitiateLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:CompleteLayerUpload
+                Resource: !Sub arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/${EcrRepo}
+              - Sid: Logs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*
+
+  ImageMirrorProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub ${NamePrefix}-image-mirror
+      Description: Pull Kohort scrubber from ECR Public and push to private ECR
+      ServiceRole: !GetAtt CodeBuildRole.Arn
+      TimeoutInMinutes: 30
+      Artifacts:
+        Type: NO_ARTIFACTS
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-x86_64-standard:5.0
+        PrivilegedMode: true
+        EnvironmentVariables:
+          - Name: PUBLIC_IMAGE
+            Value: !Ref PublicImage
+          - Name: DEST_IMAGE_URI
+            Value: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${EcrRepo}:${ImageTag}
+          - Name: AWS_ACCOUNT_ID
+            Value: !Ref AWS::AccountId
+          - Name: AWS_DEFAULT_REGION
+            Value: !Ref AWS::Region
+      Source:
+        Type: NO_SOURCE
+        BuildSpec: |
+          version: 0.2
+          phases:
+            pre_build:
+              commands:
+                - echo "Mirroring $PUBLIC_IMAGE -> $DEST_IMAGE_URI"
+                - echo "Public ECR pull does not require login"
+                - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+            build:
+              commands:
+                - docker pull $PUBLIC_IMAGE
+                - docker tag $PUBLIC_IMAGE $DEST_IMAGE_URI
+                - docker push $DEST_IMAGE_URI
+
+Outputs:
+  EcrRepositoryUri:
+    Value: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${EcrRepo}
+  LambdaImageUri:
+    Description: Use this URI for LambdaImageUri / lambda_image_uri after a successful build.
+    Value: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${EcrRepo}:${ImageTag}
+  CodeBuildProjectName:
+    Value: !Ref ImageMirrorProject

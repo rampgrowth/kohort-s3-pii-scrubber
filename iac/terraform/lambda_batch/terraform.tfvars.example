@@ -1,0 +1,27 @@
+﻿# Copy to terraform.tfvars and edit. Do not commit terraform.tfvars (gitignored).
+#
+# Config bucket (rulesets + ops): one per account, e.g. pfm-staging-kohort-sanitizer-config
+# Raw bucket: client data, e.g. pfm-staging-client-raw-data
+
+name_prefix        = "kohort-s3-sanitizer"
+source_bucket_name = "pfm-staging-client-raw-data"
+source_prefix      = "avid-datalocker/"
+
+dest_bucket_name   = "pfm-staging-client-raw-data"
+create_dest_bucket = false
+dest_prefix        = "sanitized/avid-datalocker/"
+
+ruleset_uri      = "s3://pfm-staging-kohort-sanitizer-config/rulesets/avid-datalocker.yaml"
+lambda_image_uri = "851725163197.dkr.ecr.eu-west-1.amazonaws.com/kohort-s3-sanitizer:<tag>"
+
+ops_bucket_name                    = "pfm-staging-kohort-sanitizer-config"
+inventory_destination_prefix       = "ops/inventory/avid-datalocker/"
+manifests_prefix                   = "ops/manifests/"
+batch_reports_prefix               = "ops/batch-reports/"
+enable_s3_inventory                = true
+create_batch_operations_role       = true
+manage_ops_bucket_inventory_policy = false
+
+# reserved_concurrent_executions = 500
+# lambda_memory_mb               = 2048
+# lambda_timeout_seconds         = 300

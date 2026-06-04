@@ -8,6 +8,9 @@ region: eu-west-1
 
 # Infrastructure deploy: cloudformation (default) or terraform
 deploy: cloudformation
+
+# Image publish: codebuild (no local Docker), docker (laptop), or skip (already in ECR)
+image_publish: codebuild
 # deploy: terraform
 # enable_s3_inventory: false              # terraform only; optional daily inventory
 # inventory_destination_prefix: ops/inventory/kohort-datalocker/
