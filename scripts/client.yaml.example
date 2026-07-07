@@ -1,0 +1,36 @@
+﻿# Copy to client.yaml and edit values for your account.
+# Usage: pip install -r scripts/requirements.txt
+#        python3 scripts/kohort_sanitize.py --config client.yaml setup
+#        python3 scripts/kohort_sanitize.py --config client.yaml run --prefix kohort-datalocker/t=installs/dt=2025-09-28/
+
+aws_profile: stg                 # optional; omit to use default AWS credential chain
+region: eu-west-1
+
+# Infrastructure deploy: cloudformation (default) or terraform
+deploy: cloudformation
+
+# Image publish: codebuild (no local Docker), docker (laptop), or skip (already in ECR)
+image_publish: codebuild
+# deploy: terraform
+
+raw_bucket: kohort-raw-data
+source_prefix: kohort-datalocker/
+dest_prefix: sanitized/kohort-datalocker/
+
+config_bucket: kohort-sanitizer-config
+ruleset_key: rulesets/kohort-datalocker.yaml
+ruleset_local_path: scrubber/rules/example-ruleset.yaml
+
+# Kohort public image → copied into your private ECR during setup
+public_image: public.ecr.aws/g9w2z6w5/kohort-s3-sanitizer:parquet-gzip-20260603103710
+ecr_repo: kohort-s3-sanitizer
+image_tag: latest
+
+name_prefix: kohort-s3-sanitizer          # must not collide with existing Lambda/IAM names in the account
+stack_name: kohort-s3-sanitizer
+
+manifests_prefix: ops/manifests/
+batch_reports_prefix: ops/batch-reports/
+
+lambda_memory_mb: 2048
+lambda_timeout_seconds: 300

@@ -1,0 +1,24 @@
+﻿# Copy to terraform.tfvars and edit. Do not commit terraform.tfvars (gitignored).
+#
+# Config bucket (rulesets + ops): one per account, e.g. kohort-sanitizer-config
+# Raw bucket: client data, e.g. kohort-raw-data
+
+name_prefix        = "kohort-s3-sanitizer"
+source_bucket_name = "kohort-raw-data"
+source_prefix      = "kohort-datalocker/"
+
+dest_bucket_name   = "kohort-raw-data"
+create_dest_bucket = false
+dest_prefix        = "sanitized/kohort-datalocker/"
+
+ruleset_uri      = "s3://kohort-sanitizer-config/rulesets/kohort-datalocker.yaml"
+lambda_image_uri = "123456789012.dkr.ecr.eu-west-1.amazonaws.com/kohort-s3-sanitizer:<tag>"
+
+ops_bucket_name              = "kohort-sanitizer-config"
+manifests_prefix             = "ops/manifests/"
+batch_reports_prefix         = "ops/batch-reports/"
+create_batch_operations_role = true
+
+# reserved_concurrent_executions = 500
+# lambda_memory_mb               = 2048
+# lambda_timeout_seconds         = 300

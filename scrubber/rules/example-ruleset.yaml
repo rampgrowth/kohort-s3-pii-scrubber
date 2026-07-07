@@ -1,0 +1,22 @@
+version: "1"
+
+default:
+  drop_columns:
+    - email
+    - phone_number
+    - full_name
+
+overrides:
+  - prefix: datasets/events/
+    drop_columns:
+      - user_id
+      - device_id
+
+include_globs:
+  - "*.parquet"
+  - "*.csv"
+  - "*.csv.gz"
+
+csv:
+  delimiter: ","
+  quotechar: '"'

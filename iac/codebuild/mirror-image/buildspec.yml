@@ -1,0 +1,17 @@
+﻿# Copy Kohort public ECR image into the account private ECR repository.
+# Environment variables (set by CloudFormation / CodeBuild project):
+#   PUBLIC_IMAGE, DEST_IMAGE_URI, AWS_DEFAULT_REGION
+
+version: 0.2
+
+phases:
+  pre_build:
+    commands:
+      - echo "Mirroring ${PUBLIC_IMAGE} -> ${DEST_IMAGE_URI}"
+      - echo "Public ECR pull does not require login"
+      - aws ecr get-login-password --region "$AWS_DEFAULT_REGION" | docker login --username AWS --password-stdin "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
+  build:
+    commands:
+      - docker pull "${PUBLIC_IMAGE}"
+      - docker tag "${PUBLIC_IMAGE}" "${DEST_IMAGE_URI}"
+      - docker push "${DEST_IMAGE_URI}"

@@ -1,0 +1,34 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+client.yaml
+venv/
+dist/
+*.egg-info/
+
+# Terraform
+tfplan
+*.tfplan
+.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.lock.hcl
+*.tfvars
+!*.tfvars.example
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Build artifacts
+*.zip
+build/
+
+# Local secrets
+.env
+.env.*
