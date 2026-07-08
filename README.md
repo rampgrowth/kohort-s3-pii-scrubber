@@ -29,8 +29,8 @@ source .venv/bin/activate
 
 # 2. CONFIGURE
 # - client.yaml: your region, buckets, prefixes (the template is commented)
-# - ruleset: which columns to drop per file type (see docs/RULESET_SCHEMA.md;
-#      client.yaml points at scrubber/rules/example-ruleset.yaml by default)
+# - ruleset: which columns to drop per file type. This is already setup for the user level tables. 
+#  (see docs/RULESET_SCHEMA.md; client.yaml points at scrubber/rules/appsflyer-datalocker.yaml by default)
 
 # 3. AWS SETUP
 # Mirrors the scrubber image into your ECR and deploys the Lambda + IAM roles via CloudFormation
