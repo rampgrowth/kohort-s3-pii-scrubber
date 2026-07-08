@@ -1,0 +1,46 @@
+version: "1"
+
+# AppsFlyer Data Locker user-level exports.
+# Keep appsflyer_id — the pseudonymous device-scoped join key the pipeline needs.
+# Drop every other identifier, fine-grained geo, and fingerprinting field.
+default:
+  drop_columns:
+    # Device / user identifiers
+    - advertising_id
+    - idfa
+    - idfv
+    - android_id
+    - imei
+    - oaid
+    - amazon_aid
+    - customer_user_id
+    - af_web_id
+    # Network / location
+    - ip
+    - city
+    - postal_code
+    - state
+    - dma
+    - operator
+    - carrier
+    # Fingerprinting quasi-identifiers
+    - user_agent
+    - device_model
+    - os_version
+    - language
+    - att
+    - is_lat
+    # URL / referrer fields that can embed user-level click IDs (e.g. gclid)
+    - gp_referrer
+    - gp_broadcast_referrer
+    - http_referrer
+    - original_url
+
+include_globs:
+  - "*.parquet"
+  - "*.csv"
+  - "*.csv.gz"
+
+csv:
+  delimiter: ","
+  quotechar: '"'

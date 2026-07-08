@@ -114,6 +114,20 @@ def _ensure_trailing_slash(prefix: str) -> str:
     return prefix if prefix.endswith("/") else f"{prefix}/"
 
 
+def resolve_run_prefix(cfg: ClientConfig, prefix: str) -> str:
+    """Resolve a run prefix against source_prefix.
+
+    Accepts a prefix relative to source_prefix (e.g. "t=installs/dt=2025-09-28/")
+    or a full key prefix that already starts with source_prefix.
+    """
+    src = cfg.source_prefix
+    if not prefix or prefix == src or f"{prefix}/" == src:
+        return src
+    if prefix.startswith(src):
+        return prefix
+    return f"{src}{prefix.lstrip('/')}"
+
+
 def slug_from_prefix(prefix: str) -> str:
     slug = prefix.strip("/").replace("/", "-")
     slug = re.sub(r"[^a-zA-Z0-9._=-]+", "-", slug)
@@ -193,17 +207,54 @@ def image_mirror_stack_name(cfg: ClientConfig) -> str:
     return f"{cfg.name_prefix}-image-mirror"
 
 
+def _ecr_repo_exists(cfg: ClientConfig) -> bool:
+    from botocore.exceptions import ClientError
+
+    ecr = _session(cfg).client("ecr")
+    try:
+        ecr.describe_repositories(repositoryNames=[cfg.ecr_repo])
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "RepositoryNotFoundException":
+            return False
+        raise
+    return True
+
+
+def _image_in_private_ecr(cfg: ClientConfig) -> bool:
+    from botocore.exceptions import ClientError
+
+    ecr = _session(cfg).client("ecr")
+    try:
+        ecr.describe_images(repositoryName=cfg.ecr_repo, imageIds=[{"imageTag": cfg.image_tag}])
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") in (
+            "ImageNotFoundException",
+            "RepositoryNotFoundException",
+        ):
+            return False
+        raise
+    return True
+
+
 def cmd_deploy_image_mirror_stack(cfg: ClientConfig) -> str:
     """Deploy CodeBuild + ECR stack for mirroring the public scrubber image."""
     if not IMAGE_MIRROR_CFN.exists():
         raise FileNotFoundError(f"Image mirror template not found: {IMAGE_MIRROR_CFN}")
 
     stack = image_mirror_stack_name(cfg)
+    remove_stuck_cfn_stack(cfg, stack_name=stack)
+
+    create_repo = "true"
+    if _ecr_repo_exists(cfg) and not stack_resource_ready(cfg, "EcrRepository", stack_name=stack):
+        print(f"ECR repository {cfg.ecr_repo!r} already exists; reusing it.")
+        create_repo = "false"
+
     params = {
         "NamePrefix": cfg.name_prefix,
         "PublicImage": cfg.public_image,
         "EcrRepo": cfg.ecr_repo,
         "ImageTag": cfg.image_tag,
+        "CreateEcrRepo": create_repo,
     }
     param_file = Path("/tmp/kohort-image-mirror-cfn-params.json")
     param_file.write_text(
@@ -233,7 +284,16 @@ def cmd_deploy_image_mirror_stack(cfg: ClientConfig) -> str:
         check=False,
     )
     if result.returncode != 0:
-        print(result.stderr or result.stdout, file=sys.stderr)
+        output = result.stderr or result.stdout
+        print(output, file=sys.stderr)
+        if "ResourceExistenceCheck" in output or "EarlyValidation" in output:
+            print(
+                "\nA resource this stack creates already exists outside it. Check for:\n"
+                f"  - IAM role:          {cfg.name_prefix}-image-mirror-codebuild\n"
+                f"  - CodeBuild project: {cfg.name_prefix}-image-mirror\n"
+                "Delete the conflicting resource, or set a unique name_prefix in client.yaml.",
+                file=sys.stderr,
+            )
         raise RuntimeError(f"Image mirror stack deploy failed (exit {result.returncode})")
 
     return f"{cfg.name_prefix}-image-mirror"
@@ -266,6 +326,9 @@ def publish_image(cfg: ClientConfig, *, force_skip: bool = False) -> str:
     uri = lambda_image_uri(cfg)
     if force_skip or cfg.image_publish == "skip":
         print(f"Skipping image publish; using {uri}")
+        return uri
+    if _image_in_private_ecr(cfg):
+        print(f"Image already in private ECR; skipping mirror: {uri}")
         return uri
     if cfg.image_publish == "codebuild":
         project = cmd_deploy_image_mirror_stack(cfg)
@@ -379,11 +442,11 @@ def batch_invoke_policy_name(cfg: ClientConfig) -> str:
 _CFN_READY_STATUSES = frozenset({"CREATE_COMPLETE", "UPDATE_COMPLETE"})
 
 
-def stack_resource_ready(cfg: ClientConfig, logical_id: str) -> bool:
+def stack_resource_ready(cfg: ClientConfig, logical_id: str, *, stack_name: str | None = None) -> bool:
     """True when the stack already owns a resource in a stable state."""
     cfn = _session(cfg).client("cloudformation")
     try:
-        resources = cfn.describe_stack_resources(StackName=cfg.stack_name)["StackResources"]
+        resources = cfn.describe_stack_resources(StackName=stack_name or cfg.stack_name)["StackResources"]
     except cfn.exceptions.ClientError:
         return False
     for resource in resources:
@@ -432,13 +495,14 @@ def _delete_managed_policy_by_name(iam: Any, policy_name: str) -> None:
         return
 
 
-def remove_stuck_cfn_stack(cfg: ClientConfig) -> None:
+def remove_stuck_cfn_stack(cfg: ClientConfig, *, stack_name: str | None = None) -> None:
     """Delete stacks left in non-deployable states after a failed changeset."""
     from botocore.exceptions import ClientError
 
+    name = stack_name or cfg.stack_name
     cfn = _session(cfg).client("cloudformation")
     try:
-        stack = cfn.describe_stacks(StackName=cfg.stack_name)["Stacks"][0]
+        stack = cfn.describe_stacks(StackName=name)["Stacks"][0]
     except ClientError as exc:
         if exc.response.get("Error", {}).get("Code") == "ValidationError":
             return
@@ -454,11 +518,11 @@ def remove_stuck_cfn_stack(cfg: ClientConfig) -> None:
     ):
         return
 
-    print(f"Deleting CloudFormation stack {cfg.stack_name!r} (status={status}) before redeploy...")
-    cfn.delete_stack(StackName=cfg.stack_name)
+    print(f"Deleting CloudFormation stack {name!r} (status={status}) before redeploy...")
+    cfn.delete_stack(StackName=name)
     waiter = cfn.get_waiter("stack_delete_complete")
-    waiter.wait(StackName=cfg.stack_name)
-    print(f"Deleted stack: {cfg.stack_name}")
+    waiter.wait(StackName=name)
+    print(f"Deleted stack: {name}")
 
 
 def remove_orphan_cfn_resources(cfg: ClientConfig) -> None:
@@ -694,7 +758,7 @@ def create_batch_job(cfg: ClientConfig, manifest_key: str) -> str:
     return response["JobId"]
 
 
-def cmd_run(cfg: ClientConfig, prefix: str, *, dry_run: bool) -> None:
+def cmd_run(cfg: ClientConfig, prefix: str, *, dry_run: bool, config_path: Path | None = None) -> None:
     import os
 
     if cfg.aws_profile:
@@ -703,6 +767,7 @@ def cmd_run(cfg: ClientConfig, prefix: str, *, dry_run: bool) -> None:
     sys.path.insert(0, str(SCRIPTS_DIR))
     from generate_batch_manifest import main as generate_main
 
+    prefix = resolve_run_prefix(cfg, prefix)
     manifest_key = f"{cfg.manifests_prefix}{slug_from_prefix(prefix)}.csv"
     output_uri = f"s3://{cfg.config_bucket}/{manifest_key}"
 
@@ -730,8 +795,12 @@ def cmd_run(cfg: ClientConfig, prefix: str, *, dry_run: bool) -> None:
         raise SystemExit(code)
 
     job_id = create_batch_job(cfg, manifest_key)
+    config_arg = config_path.name if config_path else "<config>"
     print(f"Batch job created: {job_id}")
-    print(f"Monitor: python3 scripts/kohort_sanitize.py --config <config> status --job-id {job_id}")
+    print(
+        f"Monitor: python3 scripts/kohort_sanitize.py --config {config_arg} "
+        f"status --job-id {job_id} --watch"
+    )
 
 
 def cmd_status(cfg: ClientConfig, job_id: str, *, watch: bool) -> None:
@@ -804,7 +873,11 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--prefix",
         required=True,
-        help="S3 prefix under raw bucket (e.g. kohort-datalocker/t=installs/dt=2025-09-28/).",
+        help=(
+            "Prefix to scrub, relative to source_prefix in client.yaml "
+            "(e.g. t=installs/dt=2025-09-28/). A full key prefix starting with "
+            "source_prefix also works."
+        ),
     )
     run.add_argument("--dry-run", action="store_true", help="List matching keys only; do not run Batch job.")
 
@@ -837,7 +910,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
     if args.command == "run":
-        cmd_run(cfg, args.prefix, dry_run=args.dry_run)
+        cmd_run(cfg, args.prefix, dry_run=args.dry_run, config_path=config_path)
         return 0
     if args.command == "status":
         cmd_status(cfg, args.job_id, watch=args.watch)

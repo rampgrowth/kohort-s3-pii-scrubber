@@ -215,7 +215,7 @@ aws s3api put-public-access-block --bucket "$CONFIG_BUCKET" --public-access-bloc
   BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
 
 # Upload ruleset (from repo root)
-aws s3 cp scrubber/rules/example-ruleset.yaml \
+aws s3 cp scrubber/rules/appsflyer-datalocker.yaml \
   "s3://${CONFIG_BUCKET}/${RULESET_KEY}"
 ```
 
@@ -640,4 +640,5 @@ aws s3api head-object \
 | [scripts/example-batch-manifest.csv](../scripts/example-batch-manifest.csv) | Manifest row format |
 | [scripts/generate_batch_manifest.py](../scripts/generate_batch_manifest.py) | Build manifest CSV from an S3 prefix |
 | [scripts/create-batch-job.example.sh](../scripts/create-batch-job.example.sh) | Batch job CLI wrapper |
-| [scrubber/rules/example-ruleset.yaml](../scrubber/rules/example-ruleset.yaml) | AppsFlyer Data Locker ruleset |
+| [scrubber/rules/appsflyer-datalocker.yaml](../scrubber/rules/appsflyer-datalocker.yaml) | AppsFlyer Data Locker ruleset |
+| [scrubber/rules/example-ruleset.yaml](../scrubber/rules/example-ruleset.yaml) | Generic starter ruleset for other data |
