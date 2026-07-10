@@ -12,14 +12,16 @@ aws cloudformation deploy \
   --template-file template.yaml \
   --parameter-overrides \
     NamePrefix=kohort-s3-sanitizer \
-    PublicImage=public.ecr.aws/g9w2z6w5/kohort-s3-sanitizer:latest \
+    PublicImage=public.ecr.aws/g9w2z6w5/kohort-s3-sanitizer:<version-tag> \
     EcrRepo=kohort-s3-sanitizer \
-    ImageTag=latest \
+    ImageTag=<version-tag> \
   --capabilities CAPABILITY_NAMED_IAM \
   --region eu-west-1
 
 aws codebuild start-build --project-name kohort-s3-sanitizer-image-mirror
 ```
+
+Use the same `<version-tag>` for `PublicImage` and `ImageTag` so the private image tag matches the published version. Avoid floating tags like `latest`: re-mirroring under the same tag may leave Lambda running a stale image.
 
 ## Requirements
 

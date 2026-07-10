@@ -1,23 +1,21 @@
 ﻿# Lambda scrubber container
 
-Clients should not be required to build this image.
+**You do not need to build this image.** Kohort publishes it to public ECR, and `kohort_sanitize.py setup` copies it into your private ECR automatically (via CodeBuild — no local Docker needed). This README is a reference for the manual and build-from-source paths.
 
-Kohort will publish a **public image** that clients can **pull and push into their own ECR**, then point Terraform/CloudFormation at the resulting image URI.
+## Manual mirror with local Docker
 
-## Use the public image (recommended)
+Lambda requires a private ECR image URI (it does not accept `public.ecr.aws/...` URIs), so the image must be copied into your account:
 
-Lambda uses an ECR image URI. The simplest workflow is:
-
-- Pull Kohort public image
-- Push to your ECR (same account/region as the Lambda)
+- Pull the Kohort public image
+- Push it to your ECR (same account/region as the Lambda)
 - Use that URI in IaC
 
 ```bash
 export AWS_ACCOUNT_ID="<account-id>"
 export AWS_REGION="<region>"
 
-# Kohort-provided public image (pin the tag)
-export PUBLIC_IMAGE="public.ecr.aws/kohort/kohort-s3-sanitizer:<version-tag>"
+# Kohort-provided public image (pin the version tag)
+export PUBLIC_IMAGE="public.ecr.aws/g9w2z6w5/kohort-s3-sanitizer:<version-tag>"
 
 # Your destination ECR repo
 export ECR_REPO="kohort-s3-sanitizer"

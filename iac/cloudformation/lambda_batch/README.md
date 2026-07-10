@@ -1,6 +1,6 @@
 ﻿# CloudFormation: S3 Batch + Lambda scrubber
 
-Console- and CLI-friendly deployment when you do not use Terraform.
+The **default deploy path** — used automatically by `kohort_sanitize.py setup`. No extra tooling needed beyond the AWS CLI.
 
 ## Full runbook
 

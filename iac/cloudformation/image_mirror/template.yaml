@@ -19,9 +19,19 @@ Parameters:
     Type: String
     Description: Tag for the destination image in private ECR.
 
+  CreateEcrRepo:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: Set to "false" when the ECR repository already exists outside this stack.
+
+Conditions:
+  ShouldCreateEcrRepo: !Equals [!Ref CreateEcrRepo, "true"]
+
 Resources:
   EcrRepository:
     Type: AWS::ECR::Repository
+    Condition: ShouldCreateEcrRepo
     Properties:
       RepositoryName: !Ref EcrRepo
       ImageScanningConfiguration:

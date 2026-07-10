@@ -1,36 +1,74 @@
-﻿# Copy to client.yaml and edit values for your account.
-# Usage: pip install -r scripts/requirements.txt
-#        python3 scripts/kohort_sanitize.py --config client.yaml setup
-#        python3 scripts/kohort_sanitize.py --config client.yaml run --prefix kohort-datalocker/t=installs/dt=2025-09-28/
+# Kohort S3 Sanitizer — client configuration.
+#
+# Getting started:
+#   1. ./scripts/bootstrap-client.sh            (copies this file to client.yaml)
+#   2. Edit every value in the REQUIRED section below.
+#   3. python3 scripts/kohort_sanitize.py --config client.yaml setup
+#
+# The prefix/ruleset values below show an AppsFlyer Data Locker layout as an
+# example — replace them with your own buckets and prefixes.
 
-aws_profile: stg                 # optional; omit to use default AWS credential chain
+# ─────────────────────────────────────────────────────────────
+# REQUIRED — replace these values with your own
+# ─────────────────────────────────────────────────────────────
+
+# AWS region your S3 buckets live in (all resources deploy here).
 region: eu-west-1
 
-# Infrastructure deploy: cloudformation (default) or terraform
+# Bucket containing the raw objects to sanitize.
+raw_bucket: your-company-raw-data
+
+# Prefix under raw_bucket to scrub (keep the trailing slash). Sanitized copies
+# are written to the same bucket: source_prefix is replaced with dest_prefix.
+source_prefix: appsflyer-datalocker/
+dest_prefix: sanitized/appsflyer-datalocker/
+
+# Small bucket for rulesets, manifests, and batch reports. Created by setup if
+# it doesn't exist. S3 bucket names are global — pick something unique to you.
+config_bucket: your-company-sanitizer-config
+
+# Ruleset = which columns get dropped, per file pattern. For AppsFlyer Data
+# Locker exports use scrubber/rules/appsflyer-datalocker.yaml; for other data,
+# start from scrubber/rules/example-ruleset.yaml and adapt it (see
+# docs/RULESET_SCHEMA.md). setup uploads it to s3://<config_bucket>/<ruleset_key>.
+ruleset_key: rulesets/appsflyer-datalocker.yaml
+ruleset_local_path: scrubber/rules/appsflyer-datalocker.yaml
+
+# AWS CLI profile with deploy permissions. Leave commented out to use the
+# default credential chain (env vars, SSO, instance role, ...).
+# aws_profile: your-profile
+
+# ─────────────────────────────────────────────────────────────
+# DEFAULTS — leave as-is unless you have a reason to change them
+# ─────────────────────────────────────────────────────────────
+
+# Infrastructure deploy method: cloudformation (default) or terraform.
 deploy: cloudformation
 
-# Image publish: codebuild (no local Docker), docker (laptop), or skip (already in ECR)
+# How the scrubber image gets into your private ECR (Lambda can't use public
+# images directly):
+#   codebuild — mirrored inside AWS (default; no local Docker needed)
+#   docker    — pull/push from this machine
+#   skip      — image is already in your ECR
 image_publish: codebuild
-# deploy: terraform
 
-raw_bucket: kohort-raw-data
-source_prefix: kohort-datalocker/
-dest_prefix: sanitized/kohort-datalocker/
-
-config_bucket: kohort-sanitizer-config
-ruleset_key: rulesets/kohort-datalocker.yaml
-ruleset_local_path: scrubber/rules/example-ruleset.yaml
-
-# Kohort public image → copied into your private ECR during setup
+# Kohort's published scrubber image; setup copies it into your private ECR.
+# Use the version tag Kohort provides — avoid floating tags like "latest".
 public_image: public.ecr.aws/g9w2z6w5/kohort-s3-sanitizer:parquet-gzip-20260603103710
 ecr_repo: kohort-s3-sanitizer
-image_tag: latest
+# image_tag: defaults to the tag of public_image — recommended: leave unset.
+# Setting a floating tag like "latest" can leave Lambda running a stale image.
 
-name_prefix: kohort-s3-sanitizer          # must not collide with existing Lambda/IAM names in the account
+# Name prefix for the Lambda, IAM roles, and CloudFormation stack created in
+# your account. Change only if it collides with existing resource names.
+name_prefix: kohort-s3-sanitizer
 stack_name: kohort-s3-sanitizer
 
+# Where manifests and batch completion reports are written inside config_bucket.
 manifests_prefix: ops/manifests/
 batch_reports_prefix: ops/batch-reports/
 
+# Lambda sizing — raise for very large Parquet files (whole file is processed
+# in memory).
 lambda_memory_mb: 2048
 lambda_timeout_seconds: 300
