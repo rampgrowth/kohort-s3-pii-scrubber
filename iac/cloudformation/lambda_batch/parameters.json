@@ -2,7 +2,7 @@
   {"ParameterKey":"NamePrefix","ParameterValue":"kohort-s3-sanitizer"},
   {"ParameterKey":"SourceBucketName","ParameterValue":"kohort-raw-data"},
   {"ParameterKey":"SourcePrefix","ParameterValue":"kohort-datalocker/"},
-  {"ParameterKey":"DestBucketName","ParameterValue":"kohort-raw-data"},
+  {"ParameterKey":"DestBucketName","ParameterValue":"kohort-sanitized"},
   {"ParameterKey":"CreateDestBucket","ParameterValue":"false"},
   {"ParameterKey":"DestPrefix","ParameterValue":"sanitized/kohort-datalocker/"},
   {"ParameterKey":"RulesetBucketName","ParameterValue":"kohort-sanitizer-config"},
