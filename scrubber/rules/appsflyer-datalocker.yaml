@@ -40,6 +40,11 @@ include_globs:
   - "*.parquet"
   - "*.csv"
   - "*.csv.gz"
+  - "*.gz"
+
+exclude_globs:
+  - "**/_SUCCESS"
+  - "**/_temporary/**"
 
 csv:
   delimiter: ","

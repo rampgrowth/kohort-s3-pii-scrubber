@@ -1,9 +1,9 @@
-﻿# Terraform: S3 Batch + Lambda scrubber
+# Terraform: S3 Batch + Lambda scrubber
 
 Deploys:
 
 - Scrubber Lambda (container image) + execution IAM
-- Optional destination bucket
+- Optional sanitized output bucket (`create_dest_bucket`)
 - Policy allowing S3 Batch to invoke Lambda
 - **S3 Batch Operations IAM role** (read manifests, write reports, invoke Lambda)
 
@@ -30,13 +30,12 @@ module "sanitizer" {
   name_prefix        = "kohort-s3-sanitizer"
   source_bucket_name = "kohort-raw-data"
 
-  # Same bucket; output key = sanitized/<full source object key>
-  dest_bucket_name   = "kohort-raw-data"
+  # Separate sanitized bucket.
+  # create_dest_bucket = true lets Terraform own it; false when it already exists.
+  dest_bucket_name   = "kohort-sanitized"
   create_dest_bucket = false
 
-  # Key mapping (see docs/RUNBOOK.md):
-  # Option A (simplest): source_prefix="" and dest_prefix="sanitized/"
-  # Option B (equivalent when all keys start with kohort-datalocker/):
+  # Key mapping (see docs/RUNBOOK.md): source_prefix is stripped, dest_prefix prepended.
   source_prefix      = "kohort-datalocker/"
   dest_prefix        = "sanitized/kohort-datalocker/"
 

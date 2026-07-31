@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 Client driver for Kohort S3 Sanitizer: one-time setup and per-prefix scrub jobs.
 
@@ -34,7 +34,9 @@ class ClientConfig:
     deploy: str  # cloudformation | terraform
     raw_bucket: str
     source_prefix: str
+    dest_bucket: str
     dest_prefix: str
+    create_dest_bucket: bool
     config_bucket: str
     ruleset_key: str
     ruleset_local_path: Path
@@ -84,13 +86,34 @@ def load_client_config(path: Path) -> ClientConfig:
     if not terraform_dir.is_absolute():
         terraform_dir = (REPO_ROOT / terraform_dir).resolve()
 
+    raw_bucket = str(data["raw_bucket"])
+    source_prefix = str(data["source_prefix"])
+    dest_bucket = str(data.get("dest_bucket") or raw_bucket)
+    dest_prefix_raw = data.get("dest_prefix")
+    dest_prefix = (
+        str(dest_prefix_raw) if dest_prefix_raw is not None else f"sanitized/{source_prefix}"
+    )
+    if dest_bucket == raw_bucket and not dest_prefix:
+        raise ValueError(
+            "dest_prefix is required when sanitized output goes to raw_bucket, "
+            "otherwise the scrubber would overwrite the source objects. "
+            "Set a dest_prefix, or set dest_bucket to a separate bucket."
+        )
+
+    separate_dest_bucket = dest_bucket != raw_bucket
+    create_dest_bucket = bool(data.get("create_dest_bucket", separate_dest_bucket))
+    if not separate_dest_bucket:
+        create_dest_bucket = False
+
     return ClientConfig(
         aws_profile=data.get("aws_profile") or None,
         region=str(data["region"]),
         deploy=deploy,
-        raw_bucket=str(data["raw_bucket"]),
-        source_prefix=str(data["source_prefix"]),
-        dest_prefix=str(data["dest_prefix"]),
+        raw_bucket=raw_bucket,
+        source_prefix=source_prefix,
+        dest_bucket=dest_bucket,
+        dest_prefix=dest_prefix,
+        create_dest_bucket=create_dest_bucket,
         config_bucket=str(data["config_bucket"]),
         ruleset_key=str(data["ruleset_key"]),
         ruleset_local_path=local_path,
@@ -388,26 +411,30 @@ def cmd_mirror_image(cfg: ClientConfig) -> str:
     return uri
 
 
-def cmd_bootstrap_config(cfg: ClientConfig) -> None:
+def _bucket_exists(s3: Any, bucket: str) -> bool:
     from botocore.exceptions import ClientError
 
-    s3 = _session(cfg).client("s3")
-
     try:
-        s3.head_bucket(Bucket=cfg.config_bucket)
-        print(f"Config bucket exists: {cfg.config_bucket}")
+        s3.head_bucket(Bucket=bucket)
     except ClientError as exc:
-        code = exc.response.get("Error", {}).get("Code", "")
-        if code not in ("404", "NoSuchBucket", "NotFound"):
-            raise
-        print(f"Creating config bucket: {cfg.config_bucket}")
-        params: dict[str, Any] = {"Bucket": cfg.config_bucket}
+        if exc.response.get("Error", {}).get("Code", "") in ("404", "NoSuchBucket", "NotFound"):
+            return False
+        raise
+    return True
+
+
+def _ensure_bucket(cfg: ClientConfig, s3: Any, bucket: str, *, label: str) -> None:
+    if _bucket_exists(s3, bucket):
+        print(f"{label} exists: {bucket}")
+    else:
+        print(f"Creating {label.lower()}: {bucket}")
+        params: dict[str, Any] = {"Bucket": bucket}
         if cfg.region != "us-east-1":
             params["CreateBucketConfiguration"] = {"LocationConstraint": cfg.region}
         s3.create_bucket(**params)
 
     s3.put_public_access_block(
-        Bucket=cfg.config_bucket,
+        Bucket=bucket,
         PublicAccessBlockConfiguration={
             "BlockPublicAcls": True,
             "IgnorePublicAcls": True,
@@ -415,6 +442,21 @@ def cmd_bootstrap_config(cfg: ClientConfig) -> None:
             "RestrictPublicBuckets": True,
         },
     )
+
+
+def cmd_bootstrap_config(cfg: ClientConfig) -> None:
+    s3 = _session(cfg).client("s3")
+
+    _ensure_bucket(cfg, s3, cfg.config_bucket, label="Config bucket")
+
+    if cfg.dest_bucket != cfg.raw_bucket:
+        if cfg.create_dest_bucket:
+            _ensure_bucket(cfg, s3, cfg.dest_bucket, label="Sanitized bucket")
+        elif not _bucket_exists(s3, cfg.dest_bucket):
+            raise RuntimeError(
+                f"Sanitized bucket does not exist: {cfg.dest_bucket}. "
+                "Create it first, or set create_dest_bucket: true in your config."
+            )
 
     if not cfg.ruleset_local_path.exists():
         raise FileNotFoundError(f"Ruleset file not found: {cfg.ruleset_local_path}")
@@ -578,7 +620,7 @@ def cmd_deploy_stack(cfg: ClientConfig, image_uri: str) -> None:
         "NamePrefix": cfg.name_prefix,
         "SourceBucketName": cfg.raw_bucket,
         "SourcePrefix": cfg.source_prefix,
-        "DestBucketName": cfg.raw_bucket,
+        "DestBucketName": cfg.dest_bucket,
         "CreateDestBucket": "false",
         "DestPrefix": cfg.dest_prefix,
         "RulesetBucketName": cfg.config_bucket,
@@ -634,7 +676,7 @@ def render_tfvars(cfg: ClientConfig, image_uri: str) -> str:
             f"source_bucket_name = {json.dumps(cfg.raw_bucket)}",
             f"source_prefix      = {json.dumps(cfg.source_prefix)}",
             "",
-            f"dest_bucket_name   = {json.dumps(cfg.raw_bucket)}",
+            f"dest_bucket_name   = {json.dumps(cfg.dest_bucket)}",
             f"create_dest_bucket = false",
             f"dest_prefix        = {json.dumps(cfg.dest_prefix)}",
             "",
@@ -713,6 +755,8 @@ def cmd_setup(
         cfg = replace(cfg, image_publish="skip")
 
     print(f"=== Kohort S3 Sanitizer setup ({cfg.deploy}, image={cfg.image_publish}) ===")
+    print(f"Source:    s3://{cfg.raw_bucket}/{cfg.source_prefix}")
+    print(f"Sanitized: s3://{cfg.dest_bucket}/{cfg.dest_prefix}")
     image_uri = publish_image(cfg)
     cmd_bootstrap_config(cfg)
     cmd_deploy_infra(cfg, image_uri)

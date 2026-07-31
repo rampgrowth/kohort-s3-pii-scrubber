@@ -1,13 +1,17 @@
-﻿# Copy to terraform.tfvars and edit. Do not commit terraform.tfvars (gitignored).
+# Copy to terraform.tfvars and edit. Do not commit terraform.tfvars (gitignored).
 #
 # Config bucket (rulesets + ops): one per account, e.g. kohort-sanitizer-config
 # Raw bucket: client data, e.g. kohort-raw-data
+# Sanitized bucket: cleaned output
 
 name_prefix        = "kohort-s3-sanitizer"
 source_bucket_name = "kohort-raw-data"
 source_prefix      = "kohort-datalocker/"
 
-dest_bucket_name   = "kohort-raw-data"
+# Separate sanitized bucket. Set create_dest_bucket = true to have Terraform own
+# it; leave false when the bucket already exists (kohort_sanitize.py setup
+# creates it outside Terraform so a destroy never deletes cleaned data).
+dest_bucket_name   = "kohort-sanitized"
 create_dest_bucket = false
 dest_prefix        = "sanitized/kohort-datalocker/"
 

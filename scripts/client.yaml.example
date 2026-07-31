@@ -18,10 +18,15 @@ region: eu-west-1
 # Bucket containing the raw objects to sanitize.
 raw_bucket: your-company-raw-data
 
-# Prefix under raw_bucket to scrub (keep the trailing slash). Sanitized copies
-# are written to the same bucket: source_prefix is replaced with dest_prefix.
+# Prefix under raw_bucket to scrub (keep the trailing slash). source_prefix can
+# be replaced using dest_prefix
 source_prefix: appsflyer-datalocker/
 dest_prefix: sanitized/appsflyer-datalocker/
+
+# Where sanitized copies are written. Recommended: a separate bucket with no raw data.
+# Created by setup when create_dest_bucket is true. S3 bucket names are global — pick a unique one.
+# create_dest_bucket: true (default)
+dest_bucket: your-company-sanitized
 
 # Small bucket for rulesets, manifests, and batch reports. Created by setup if
 # it doesn't exist. S3 bucket names are global — pick something unique to you.

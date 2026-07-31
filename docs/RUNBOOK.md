@@ -1,4 +1,4 @@
-﻿# Client runbook
+# Client runbook
 
 Step-by-step guide for deploying the scrubber with **Terraform** or **CloudFormation**, then running a backfill via **S3 Batch Operations**.
 
@@ -101,17 +101,18 @@ Fill in this checklist before deploy (`terraform apply` or `cloudformation deplo
 | **AWS profile** | CLI profile with deploy permissions | `staging` |
 | **Raw bucket** | Bucket containing source objects | `kohort-raw-data` |
 | **Raw prefix** | Prefix to scope IAM and manifests (trailing `/`) | `kohort-datalocker/` |
+| **Sanitized bucket** | Bucket for cleaned output — the only one you share with Kohort | `kohort-sanitized` |
 | **Config bucket** | Constant bucket for rulesets + ops artifacts (see naming below) | `kohort-sanitizer-config` |
 | **Ruleset key** | Path to YAML ruleset in ruleset bucket | `rulesets/kohort-datalocker.yaml` |
 | **Lambda image** | Your ECR URI after Step 1 | `123456789012.dkr.ecr.eu-west-1.amazonaws.com/kohort-s3-sanitizer:<tag>` |
 
 ### Output layout (default)
 
-- **Destination bucket** = same as raw bucket.
-- **Destination key** = `sanitized/<full source key>`.
+- **Destination bucket** = `dest_bucket` if set (recommended: separate from raw data), otherwise the raw bucket.
+- **Destination key** = `sanitized/<full source key>` (default; override via `dest_prefix`).
 
-| Source key | Sanitized key (same bucket) |
-|------------|-----------------------------|
+| Source key | Sanitized key |
+|------------|----------------|
 | `kohort-datalocker/t=installs/dt=2025-09-28/h=0/part-00000….gz.parquet` | `sanitized/kohort-datalocker/t=installs/dt=2025-09-28/h=0/part-00000.gz.parquet` |
 
 Deploy settings for this mapping (Terraform **or** CloudFormation - use **both** values together):
@@ -120,9 +121,9 @@ Deploy settings for this mapping (Terraform **or** CloudFormation - use **both**
 |---------|-----------|---------------------------|
 | Source scope | `source_prefix = "kohort-datalocker/"` | `SourcePrefix=kohort-datalocker/` |
 | Sanitized prefix | `dest_prefix = "sanitized/kohort-datalocker/"` | `DestPrefix=sanitized/kohort-datalocker/` |
-| Raw / dest bucket | `dest_bucket_name` = raw bucket | `DestBucketName` = raw bucket, `CreateDestBucket=false` |
+| Sanitized bucket | `dest_bucket_name = "kohort-sanitized"`, `create_dest_bucket = false` | `DestBucketName=kohort-sanitized`, `CreateDestBucket=false` |
 
-Alternative (equivalent output keys): empty source prefix + `sanitized/` dest prefix (broader IAM read on the whole bucket).
+Alternative: omit `dest_bucket` to write back into the raw bucket under `dest_prefix`.
 
 ### Config bucket naming
 
@@ -248,9 +249,9 @@ name_prefix        = "kohort-s3-sanitizer"
 source_bucket_name = "kohort-raw-data"
 source_prefix      = "kohort-datalocker/"   # IAM scope
 
-dest_bucket_name   = "kohort-raw-data"
+dest_bucket_name   = "kohort-sanitized"        # separate bucket
 create_dest_bucket = false
-dest_prefix        = "sanitized/kohort-datalocker/"  # output: sanitized/kohort-datalocker/<path under prefix>
+dest_prefix        = "sanitized/kohort-datalocker/"  # output: sanitized/kohort-datalocker/<path under source_prefix>
 
 ruleset_uri        = "s3://kohort-sanitizer-config/rulesets/kohort-datalocker.yaml"
 lambda_image_uri   = "123456789012.dkr.ecr.eu-west-1.amazonaws.com/kohort-s3-sanitizer:<tag>"
@@ -309,8 +310,8 @@ Copy and edit [`iac/cloudformation/lambda_batch/parameters.json`](../iac/cloudfo
 | `NamePrefix` | `kohort-s3-sanitizer` |
 | `SourceBucketName` | `kohort-raw-data` |
 | `SourcePrefix` | `kohort-datalocker/` |
-| `DestBucketName` | `kohort-raw-data` |
-| `CreateDestBucket` | `false` |
+| `DestBucketName` | `kohort-sanitized` |
+| `CreateDestBucket` | `false` (`true` to let the stack create it) |
 | `DestPrefix` | `sanitized/kohort-datalocker/` |
 | `RulesetBucketName` | `kohort-sanitizer-config` |
 | `RulesetObjectKey` | `rulesets/kohort-datalocker.yaml` |
@@ -454,6 +455,7 @@ kohort-raw-data,kohort-datalocker/t=installs/dt=2025-09-28/h=0/part-00001.gz.par
 ```bash
 export AWS_PROFILE="<profile>"
 export RAW_BUCKET="kohort-raw-data"
+export DEST_BUCKET="kohort-sanitized"
 export SOURCE_KEY="kohort-datalocker/t=installs/dt=2022-08-27/h=1/part-00000.gz"
 export MANIFEST_KEY="ops/manifests/single-file.csv"
 
@@ -464,10 +466,10 @@ EOF
 aws s3 cp /tmp/manifest.csv "s3://${OPS_BUCKET}/${MANIFEST_KEY}"
 ```
 
-Expected sanitized output (same bucket; with `DestPrefix=sanitized/kohort-datalocker/`):
+Expected sanitized output (separate bucket; with `DestPrefix=sanitized/kohort-datalocker/`):
 
 ```text
-s3://${RAW_BUCKET}/sanitized/kohort-datalocker/t=installs/dt=2025-09-28/h=0/part-00000.gz.parquet
+s3://${DEST_BUCKET}/sanitized/kohort-datalocker/t=installs/dt=2025-09-28/h=0/part-00000.gz.parquet
 ```
 
 **2. Create the Batch job**
@@ -580,14 +582,14 @@ export BATCH_ROLE_ARN="<batch-role-arn>"
 
 ## Step 6 — Validate
 
-1. **Existence:** sanitized object under `sanitized/kohort-datalocker/...` (or your `DestPrefix`) in the raw bucket.
+1. **Existence:** sanitized object under `sanitized/kohort-datalocker/...` (or your `DestPrefix`) in the sanitized bucket.
 2. **Columns:** dropped fields absent (Parquet/CSV spot-check).
 3. **Failures:** zero failures in Batch report; if failures, read Lambda logs (unsupported extension, ruleset skip, timeout).
 
 ```bash
 # Example: confirm sanitized object exists
 aws s3api head-object \
-  --bucket "$RAW_BUCKET" \
+  --bucket "$DEST_BUCKET" \
   --key "sanitized/kohort-datalocker/t=installs/dt=2025-09-28/h=0/part-00000.gz.parquet"
 ```
 
