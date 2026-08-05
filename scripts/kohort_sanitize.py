@@ -831,9 +831,14 @@ def cmd_run(cfg: ClientConfig, prefix: str, *, dry_run: bool, full: bool = False
         cfg.region,
     ]
     if not full:
+        relative = prefix
+        if cfg.source_prefix and prefix.startswith(cfg.source_prefix):
+            relative = prefix[len(cfg.source_prefix):]
+        scoped_dest_prefix = f"{cfg.dest_prefix}{relative}" if cfg.dest_prefix else relative
         gen_args += [
             "--dest-bucket", cfg.dest_bucket,
             "--dest-prefix", cfg.dest_prefix,
+            "--dest-list-prefix", scoped_dest_prefix,
             "--source-prefix", cfg.source_prefix,
         ]
     if dry_run:

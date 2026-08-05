@@ -209,6 +209,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Destination prefix used for key mapping (default: empty).",
     )
     parser.add_argument(
+        "--dest-list-prefix",
+        metavar="PREFIX",
+        help="Prefix to list in dest bucket (narrows the listing scope). Defaults to --dest-prefix.",
+    )
+    parser.add_argument(
         "--source-prefix",
         metavar="PREFIX",
         default="",
@@ -241,8 +246,9 @@ def main(argv: list[str] | None = None) -> int:
 
     existing_dest_keys: frozenset[str] | None = None
     if args.dest_bucket and not args.full:
-        print(f"Incremental mode: listing existing objects in s3://{args.dest_bucket}/{args.dest_prefix}")
-        existing_dest_keys = list_existing_dest_keys(s3, args.dest_bucket, args.dest_prefix)
+        list_prefix = args.dest_list_prefix or args.dest_prefix
+        print(f"Incremental mode: listing existing objects in s3://{args.dest_bucket}/{list_prefix}")
+        existing_dest_keys = list_existing_dest_keys(s3, args.dest_bucket, list_prefix)
         print(f"  found {len(existing_dest_keys)} existing sanitized objects")
 
     rows = list(
