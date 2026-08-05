@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 Generate an S3 Batch Operations manifest (headerless bucket,key CSV) from an S3 prefix.
 
@@ -23,6 +23,24 @@ DEFAULT_EXCLUDE_GLOBS = ("**/_SUCCESS", "**/_temporary/**")
 def normalize_prefix(prefix: str) -> str:
     """Strip leading slashes; S3 object keys are never absolute paths."""
     return prefix.lstrip("/")
+
+
+def map_dest_key(source_key: str, source_prefix: str, dest_prefix: str) -> str:
+    """Compute the expected destination key for a source key."""
+    relative = source_key
+    if source_prefix and source_key.startswith(source_prefix):
+        relative = source_key[len(source_prefix):]
+    return f"{dest_prefix}{relative}" if dest_prefix else relative
+
+
+def list_existing_dest_keys(s3_client, dest_bucket: str, dest_prefix: str) -> frozenset[str]:
+    """List all keys under dest_prefix in dest_bucket. Used for incremental filtering."""
+    keys: list[str] = []
+    paginator = s3_client.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=dest_bucket, Prefix=normalize_prefix(dest_prefix)):
+        for obj in page.get("Contents") or []:
+            keys.append(obj["Key"])
+    return frozenset(keys)
 
 
 def should_include_key(
@@ -74,6 +92,9 @@ def iter_manifest_rows(
     exclude_globs: tuple[str, ...],
     skip_zero_byte: bool,
     max_keys: int | None,
+    existing_dest_keys: frozenset[str] | None = None,
+    source_prefix: str = "",
+    dest_prefix: str = "",
 ) -> Iterator[str]:
     """Yield CSV lines `bucket,key` for objects matching filters."""
     normalized = normalize_prefix(prefix)
@@ -89,6 +110,10 @@ def iter_manifest_rows(
                 key, include_globs=include_globs, exclude_globs=exclude_globs
             ):
                 continue
+            if existing_dest_keys is not None:
+                dest_key = map_dest_key(key, source_prefix, dest_prefix)
+                if dest_key in existing_dest_keys:
+                    continue
             yield f"{bucket},{key}"
             count += 1
             if max_keys is not None and count >= max_keys:
@@ -172,6 +197,28 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print counts only; do not write the manifest.",
     )
+    parser.add_argument(
+        "--dest-bucket",
+        metavar="BUCKET",
+        help="Destination bucket for incremental filtering (skip objects already sanitized).",
+    )
+    parser.add_argument(
+        "--dest-prefix",
+        metavar="PREFIX",
+        default="",
+        help="Destination prefix used for key mapping (default: empty).",
+    )
+    parser.add_argument(
+        "--source-prefix",
+        metavar="PREFIX",
+        default="",
+        help="Source prefix stripped from keys during mapping (default: empty).",
+    )
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help="Disable incremental filtering; include all matching objects even if already sanitized.",
+    )
     parser.add_argument("--region", help="AWS region (default: session / AWS_REGION).")
     return parser
 
@@ -192,6 +239,12 @@ def main(argv: list[str] | None = None) -> int:
         else:
             exclude_globs = DEFAULT_EXCLUDE_GLOBS
 
+    existing_dest_keys: frozenset[str] | None = None
+    if args.dest_bucket and not args.full:
+        print(f"Incremental mode: listing existing objects in s3://{args.dest_bucket}/{args.dest_prefix}")
+        existing_dest_keys = list_existing_dest_keys(s3, args.dest_bucket, args.dest_prefix)
+        print(f"  found {len(existing_dest_keys)} existing sanitized objects")
+
     rows = list(
         iter_manifest_rows(
             s3,
@@ -201,6 +254,9 @@ def main(argv: list[str] | None = None) -> int:
             exclude_globs=exclude_globs,
             skip_zero_byte=not args.include_zero_byte,
             max_keys=args.max_keys,
+            existing_dest_keys=existing_dest_keys,
+            source_prefix=args.source_prefix,
+            dest_prefix=args.dest_prefix,
         )
     )
 
