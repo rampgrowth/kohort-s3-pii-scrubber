@@ -77,6 +77,8 @@ If you previously created the batch IAM role manually (old runbook Step 3B.4), `
 
 Preview object count without starting a job: add `--dry-run` to `run`.
 
+`run` is **incremental by default** — objects that already exist in the destination are skipped. Use `--full` to force a complete re-scrub (e.g. after a ruleset change).
+
 The sections below are the **manual reference** (Terraform path, console steps, troubleshooting). The driver automates **Step 3A (Terraform)** or **Step 3B (CloudFormation)** via `deploy` in `client.yaml` or `setup --terraform` / `setup --cloudformation`. Both paths include the batch IAM role; `run` and `status` read the correct outputs automatically.
 
 ---

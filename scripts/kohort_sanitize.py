@@ -802,7 +802,7 @@ def create_batch_job(cfg: ClientConfig, manifest_key: str) -> str:
     return response["JobId"]
 
 
-def cmd_run(cfg: ClientConfig, prefix: str, *, dry_run: bool, config_path: Path | None = None) -> None:
+def cmd_run(cfg: ClientConfig, prefix: str, *, dry_run: bool, full: bool = False, config_path: Path | None = None) -> None:
     import os
 
     if cfg.aws_profile:
@@ -830,6 +830,17 @@ def cmd_run(cfg: ClientConfig, prefix: str, *, dry_run: bool, config_path: Path 
         "--region",
         cfg.region,
     ]
+    if not full:
+        relative = prefix
+        if cfg.source_prefix and prefix.startswith(cfg.source_prefix):
+            relative = prefix[len(cfg.source_prefix):]
+        scoped_dest_prefix = f"{cfg.dest_prefix}{relative}" if cfg.dest_prefix else relative
+        gen_args += [
+            "--dest-bucket", cfg.dest_bucket,
+            "--dest-prefix", cfg.dest_prefix,
+            "--dest-list-prefix", scoped_dest_prefix,
+            "--source-prefix", cfg.source_prefix,
+        ]
     if dry_run:
         gen_args.append("--dry-run")
         raise SystemExit(generate_main(gen_args))
@@ -924,6 +935,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     run.add_argument("--dry-run", action="store_true", help="List matching keys only; do not run Batch job.")
+    run.add_argument("--full", action="store_true", help="Re-scrub all objects (disable incremental skip of already-sanitized keys).")
 
     status = sub.add_parser("status", help="Show S3 Batch job status.")
     status.add_argument("--job-id", required=True)
@@ -954,7 +966,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
     if args.command == "run":
-        cmd_run(cfg, args.prefix, dry_run=args.dry_run, config_path=config_path)
+        cmd_run(cfg, args.prefix, dry_run=args.dry_run, full=args.full, config_path=config_path)
         return 0
     if args.command == "status":
         cmd_status(cfg, args.job_id, watch=args.watch)
