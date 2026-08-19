@@ -1,4 +1,4 @@
-# Client runbook
+﻿# Client runbook
 
 Step-by-step guide for deploying the scrubber with **Terraform** or **CloudFormation**, then running a backfill via **S3 Batch Operations**.
 
@@ -78,6 +78,8 @@ If you previously created the batch IAM role manually (old runbook Step 3B.4), `
 Preview object count without starting a job: add `--dry-run` to `run`.
 
 `run` is **incremental by default** — objects that already exist in the destination are skipped. Use `--full` to force a complete re-scrub (e.g. after a ruleset change).
+
+To run this automatically every day, enable the [daily schedule](#steady-state--daily-schedule) instead of invoking `run` by hand.
 
 The sections below are the **manual reference** (Terraform path, console steps, troubleshooting). The driver automates **Step 3A (Terraform)** or **Step 3B (CloudFormation)** via `deploy` in `client.yaml` or `setup --terraform` / `setup --cloudformation`. Both paths include the batch IAM role; `run` and `status` read the correct outputs automatically.
 
@@ -594,6 +596,45 @@ aws s3api head-object \
   --bucket "$DEST_BUCKET" \
   --key "sanitized/kohort-datalocker/t=installs/dt=2025-09-28/h=0/part-00000.gz.parquet"
 ```
+
+---
+
+## Steady state — daily schedule
+
+The one-shot `run` command is for backfills and ad-hoc jobs. For ongoing daily scrubbing, enable the built-in schedule instead of the `run` command.
+
+### Enable it
+
+Add a `schedule` block to `client.yaml` and re-run `setup`:
+
+```yaml
+schedule:
+  enabled: true
+  expression: "cron(0 6 * * ? *)"   # daily 06:00 UTC (EventBridge cron)
+  prefixes:
+    - t=installs/                    # relative to source_prefix
+    - t=events/
+```
+
+```bash
+python3 scripts/kohort_sanitize.py --config client.yaml setup
+```
+
+Incremental skip means each daily run only scrubs objects not already in the sanitized bucket.
+
+### Verify
+
+Test it on demand without waiting for the schedule:
+
+```bash
+aws lambda invoke --function-name kohort-s3-sanitizer-orchestrator /tmp/out.json
+cat /tmp/out.json   # {"jobs_created": N, "results": [...]}
+```
+
+### Notes
+
+- **Ruleset changes:** after changing the ruleset, run `run --full <prefix>` once; the schedule stays incremental and won't re-scrub existing objects.
+- **Disable:** set `schedule.enabled: false` and re-run `setup`.
 
 ---
 

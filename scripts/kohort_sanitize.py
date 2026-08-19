@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 Client driver for Kohort S3 Sanitizer: one-time setup and per-prefix scrub jobs.
 
@@ -25,6 +25,7 @@ CFN_TEMPLATE = REPO_ROOT / "iac/cloudformation/lambda_batch/template.yaml"
 IMAGE_MIRROR_CFN = REPO_ROOT / "iac/cloudformation/image_mirror/template.yaml"
 TERRAFORM_DIR = REPO_ROOT / "iac/terraform/lambda_batch"
 SCRIPTS_DIR = Path(__file__).resolve().parent
+CONTAINER_SRC = REPO_ROOT / "scrubber/container/src"
 
 
 @dataclass(frozen=True)
@@ -51,6 +52,9 @@ class ClientConfig:
     lambda_memory_mb: int
     lambda_timeout_seconds: int
     terraform_dir: Path
+    schedule_enabled: bool
+    schedule_expression: str
+    schedule_prefixes: tuple[str, ...]
 
 
 def load_client_config(path: Path) -> ClientConfig:
@@ -105,6 +109,21 @@ def load_client_config(path: Path) -> ClientConfig:
     if not separate_dest_bucket:
         create_dest_bucket = False
 
+    schedule = data.get("schedule") or {}
+    if not isinstance(schedule, dict):
+        raise ValueError("schedule must be a YAML mapping (enabled/expression/prefixes)")
+    schedule_enabled = bool(schedule.get("enabled", False))
+    schedule_expression = str(schedule.get("expression") or "cron(0 6 * * ? *)")
+    schedule_prefixes = tuple(str(p) for p in (schedule.get("prefixes") or ()))
+    if schedule_enabled:
+        if not schedule_prefixes:
+            raise ValueError(
+                "schedule.prefixes is required when schedule.enabled is true "
+                "(list of prefixes to scrub daily, relative to source_prefix)."
+            )
+        if not schedule.get("expression"):
+            raise ValueError("schedule.expression is required when schedule.enabled is true.")
+
     return ClientConfig(
         aws_profile=data.get("aws_profile") or None,
         region=str(data["region"]),
@@ -130,6 +149,9 @@ def load_client_config(path: Path) -> ClientConfig:
         lambda_memory_mb=int(data.get("lambda_memory_mb", 2048)),
         lambda_timeout_seconds=int(data.get("lambda_timeout_seconds", 300)),
         terraform_dir=terraform_dir,
+        schedule_enabled=schedule_enabled,
+        schedule_expression=schedule_expression,
+        schedule_prefixes=schedule_prefixes,
     )
 
 
@@ -630,6 +652,9 @@ def cmd_deploy_stack(cfg: ClientConfig, image_uri: str) -> None:
         "LambdaTimeoutSeconds": str(cfg.lambda_timeout_seconds),
         "ManifestsPrefix": cfg.manifests_prefix,
         "BatchReportsPrefix": cfg.batch_reports_prefix,
+        "EnableSchedule": "true" if cfg.schedule_enabled else "false",
+        "ScheduleExpression": cfg.schedule_expression,
+        "SchedulePrefixes": json.dumps(list(cfg.schedule_prefixes)),
     }
 
     param_file = Path("/tmp/kohort-sanitize-cfn-params.json")
@@ -690,6 +715,10 @@ def render_tfvars(cfg: ClientConfig, image_uri: str) -> str:
             "",
             f"lambda_memory_mb       = {cfg.lambda_memory_mb}",
             f"lambda_timeout_seconds = {cfg.lambda_timeout_seconds}",
+            "",
+            f"enable_schedule     = {json.dumps(cfg.schedule_enabled)}",
+            f"schedule_expression = {json.dumps(cfg.schedule_expression)}",
+            f"schedule_prefixes   = {json.dumps(list(cfg.schedule_prefixes))}",
             "",
         ]
     )
@@ -763,99 +792,47 @@ def cmd_setup(
     print("Setup complete.")
 
 
-def create_batch_job(cfg: ClientConfig, manifest_key: str) -> str:
-    s3 = _session(cfg).client("s3")
-    s3control = _session(cfg).client("s3control")
-    acct = account_id(cfg)
-
-    lambda_arn = get_lambda_arn(cfg)
-    batch_role_arn = get_batch_role_arn(cfg)
-
-    etag = s3.head_object(Bucket=cfg.config_bucket, Key=manifest_key)["ETag"].strip('"')
-
-    manifest = {
-        "Spec": {"Format": "S3BatchOperations_CSV_20180820", "Fields": ["Bucket", "Key"]},
-        "Location": {
-            "ObjectArn": f"arn:aws:s3:::{cfg.config_bucket}/{manifest_key}",
-            "ETag": etag,
-        },
-    }
-    report = {
-        "Bucket": f"arn:aws:s3:::{cfg.config_bucket}",
-        "Prefix": cfg.batch_reports_prefix,
-        "Format": "Report_CSV_20180820",
-        "Enabled": True,
-        "ReportScope": "AllTasks",
-    }
-    operation = {"LambdaInvoke": {"FunctionArn": lambda_arn}}
-
-    response = s3control.create_job(
-        AccountId=acct,
-        ConfirmationRequired=False,
-        Priority=10,
-        RoleArn=batch_role_arn,
-        Operation=operation,
-        Manifest=manifest,
-        Report=report,
-        ClientRequestToken=f"scrub-{int(time.time())}",
-    )
-    return response["JobId"]
-
-
 def cmd_run(cfg: ClientConfig, prefix: str, *, dry_run: bool, full: bool = False, config_path: Path | None = None) -> None:
     import os
 
     if cfg.aws_profile:
         os.environ["AWS_PROFILE"] = cfg.aws_profile
 
-    sys.path.insert(0, str(SCRIPTS_DIR))
-    from generate_batch_manifest import main as generate_main
+    if str(CONTAINER_SRC) not in sys.path:
+        sys.path.insert(0, str(CONTAINER_SRC))
+    from run_job import run_prefix
 
-    prefix = resolve_run_prefix(cfg, prefix)
-    manifest_key = f"{cfg.manifests_prefix}{slug_from_prefix(prefix)}.csv"
-    output_uri = f"s3://{cfg.config_bucket}/{manifest_key}"
+    resolved = resolve_run_prefix(cfg, prefix)
+    session = _session(cfg)
 
-    print(f"Prefix: {prefix}")
-    print(f"Manifest: {output_uri}")
+    print(f"Prefix: {resolved}")
 
-    gen_args = [
-        "--bucket",
-        cfg.raw_bucket,
-        "--prefix",
-        prefix,
-        "--ruleset",
-        ruleset_uri(cfg),
-        "--output",
-        output_uri,
-        "--region",
-        cfg.region,
-    ]
-    if not full:
-        relative = prefix
-        if cfg.source_prefix and prefix.startswith(cfg.source_prefix):
-            relative = prefix[len(cfg.source_prefix):]
-        scoped_dest_prefix = f"{cfg.dest_prefix}{relative}" if cfg.dest_prefix else relative
-        gen_args += [
-            "--dest-bucket", cfg.dest_bucket,
-            "--dest-prefix", cfg.dest_prefix,
-            "--dest-list-prefix", scoped_dest_prefix,
-            "--source-prefix", cfg.source_prefix,
-        ]
-    if dry_run:
-        gen_args.append("--dry-run")
-        raise SystemExit(generate_main(gen_args))
-
-    code = generate_main(gen_args)
-    if code != 0:
-        raise SystemExit(code)
-
-    job_id = create_batch_job(cfg, manifest_key)
-    config_arg = config_path.name if config_path else "<config>"
-    print(f"Batch job created: {job_id}")
-    print(
-        f"Monitor: python3 scripts/kohort_sanitize.py --config {config_arg} "
-        f"status --job-id {job_id} --watch"
+    result = run_prefix(
+        s3_client=session.client("s3"),
+        s3control_client=session.client("s3control"),
+        account_id=account_id(cfg),
+        raw_bucket=cfg.raw_bucket,
+        source_prefix=cfg.source_prefix,
+        prefix=resolved,
+        dest_bucket=cfg.dest_bucket,
+        dest_prefix=cfg.dest_prefix,
+        ruleset_uri=ruleset_uri(cfg),
+        config_bucket=cfg.config_bucket,
+        manifests_prefix=cfg.manifests_prefix,
+        batch_reports_prefix=cfg.batch_reports_prefix,
+        batch_role_arn=get_batch_role_arn(cfg),
+        lambda_arn=get_lambda_arn(cfg),
+        full=full,
+        allow_empty=True,
+        dry_run=dry_run,
     )
+
+    if result.job_id:
+        config_arg = config_path.name if config_path else "<config>"
+        print(
+            f"Monitor: python3 scripts/kohort_sanitize.py --config {config_arg} "
+            f"status --job-id {result.job_id} --watch"
+        )
 
 
 def cmd_status(cfg: ClientConfig, job_id: str, *, watch: bool) -> None:

@@ -71,10 +71,39 @@ Parameters:
     Default: ops/batch-reports/
     Description: Prefix in the config bucket for Batch completion reports.
 
+  EnableSchedule:
+    Type: String
+    AllowedValues: ["true", "false"]
+    Default: "false"
+    Description: Deploy the daily orchestrator Lambda + EventBridge schedule.
+
+  ScheduleExpression:
+    Type: String
+    Default: cron(0 6 * * ? *)
+    Description: EventBridge schedule expression for the orchestrator (default daily 06:00 UTC).
+
+  SchedulePrefixes:
+    Type: String
+    Default: ""
+    Description: >-
+      Prefixes the orchestrator scrubs each run, relative to SourcePrefix.
+      JSON list (e.g. ["t=installs/"]) or comma-separated string.
+
+  OrchestratorMemoryMb:
+    Type: Number
+    Default: 1024
+    Description: Memory for the orchestrator Lambda (listing-heavy, not transform-heavy).
+
+  OrchestratorTimeoutSeconds:
+    Type: Number
+    Default: 900
+    Description: Timeout for the orchestrator Lambda.
+
 Conditions:
   CreateDestBucket: !Equals [!Ref CreateDestBucket, "true"]
   UseKms: !Not [!Equals [!Ref KmsKeyArn, ""]]
   UseReservedConcurrency: !Not [!Equals [!Ref ReservedConcurrentExecutions, -1]]
+  EnableSchedule: !Equals [!Ref EnableSchedule, "true"]
 
 Resources:
   DestBucket:
@@ -218,6 +247,115 @@ Resources:
                   - s3:PutObject
                 Resource: !Sub arn:aws:s3:::${RulesetBucketName}/${BatchReportsPrefix}*
 
+  # ── Scheduled orchestrator (optional) ─────────────────────────────
+  OrchestratorLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: EnableSchedule
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${NamePrefix}-orchestrator
+      RetentionInDays: !Ref LogRetentionDays
+
+  OrchestratorRole:
+    Type: AWS::IAM::Role
+    Condition: EnableSchedule
+    Properties:
+      RoleName: !Sub ${NamePrefix}-orchestrator
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: orchestrator
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ListSource
+                Effect: Allow
+                Action:
+                  - s3:ListBucket
+                Resource: !Sub arn:aws:s3:::${SourceBucketName}
+              - Sid: ListDest
+                Effect: Allow
+                Action:
+                  - s3:ListBucket
+                Resource: !Sub arn:aws:s3:::${DestBucketName}
+              - Sid: ReadRuleset
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: !Sub arn:aws:s3:::${RulesetBucketName}/${RulesetObjectKey}
+              - Sid: WriteAndReadManifests
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                Resource: !Sub arn:aws:s3:::${RulesetBucketName}/${ManifestsPrefix}*
+              - Sid: CreateBatchJob
+                Effect: Allow
+                Action:
+                  - s3:CreateJob
+                Resource: "*"
+              - Sid: PassBatchRole
+                Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource: !GetAtt BatchOperationsRole.Arn
+
+  OrchestratorFunction:
+    Type: AWS::Lambda::Function
+    Condition: EnableSchedule
+    DependsOn: OrchestratorLogGroup
+    Properties:
+      FunctionName: !Sub ${NamePrefix}-orchestrator
+      PackageType: Image
+      Code:
+        ImageUri: !Ref LambdaImageUri
+      ImageConfig:
+        Command:
+          - orchestrator.lambda_handler
+      Role: !GetAtt OrchestratorRole.Arn
+      MemorySize: !Ref OrchestratorMemoryMb
+      Timeout: !Ref OrchestratorTimeoutSeconds
+      Environment:
+        Variables:
+          RAW_BUCKET: !Ref SourceBucketName
+          SOURCE_PREFIX: !Ref SourcePrefix
+          DEST_BUCKET: !Ref DestBucketName
+          DEST_PREFIX: !Ref DestPrefix
+          RULESET_URI: !Sub s3://${RulesetBucketName}/${RulesetObjectKey}
+          CONFIG_BUCKET: !Ref RulesetBucketName
+          MANIFESTS_PREFIX: !Ref ManifestsPrefix
+          BATCH_REPORTS_PREFIX: !Ref BatchReportsPrefix
+          BATCH_ROLE_ARN: !GetAtt BatchOperationsRole.Arn
+          SCRUBBER_FUNCTION_ARN: !GetAtt ScrubberFunction.Arn
+          SCHEDULE_PREFIXES: !Ref SchedulePrefixes
+
+  ScheduleRule:
+    Type: AWS::Events::Rule
+    Condition: EnableSchedule
+    Properties:
+      Name: !Sub ${NamePrefix}-schedule
+      Description: Daily trigger for the Kohort S3 Sanitizer orchestrator.
+      ScheduleExpression: !Ref ScheduleExpression
+      State: ENABLED
+      Targets:
+        - Id: orchestrator
+          Arn: !GetAtt OrchestratorFunction.Arn
+
+  ScheduleInvokePermission:
+    Type: AWS::Lambda::Permission
+    Condition: EnableSchedule
+    Properties:
+      FunctionName: !Ref OrchestratorFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt ScheduleRule.Arn
+
 Outputs:
   LambdaFunctionName:
     Value: !Ref ScrubberFunction
@@ -235,3 +373,9 @@ Outputs:
     Value: !Ref BatchOperationsRole
   RulesetUri:
     Value: !Sub s3://${RulesetBucketName}/${RulesetObjectKey}
+  OrchestratorFunctionArn:
+    Condition: EnableSchedule
+    Value: !GetAtt OrchestratorFunction.Arn
+  ScheduleRuleName:
+    Condition: EnableSchedule
+    Value: !Ref ScheduleRule

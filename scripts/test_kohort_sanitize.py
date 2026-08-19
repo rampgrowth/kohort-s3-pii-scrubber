@@ -1,4 +1,4 @@
-"""Tests for kohort_sanitize helpers."""
+﻿"""Tests for kohort_sanitize helpers."""
 
 import sys
 import tempfile
@@ -116,6 +116,38 @@ def test_create_dest_bucket_can_be_disabled():
     assert cfg.create_dest_bucket is False
 
 
+def test_schedule_disabled_by_default_in_example():
+    cfg = load_client_config(EXAMPLE)
+    assert cfg.schedule_enabled is False
+    assert cfg.schedule_expression == "cron(0 6 * * ? *)"
+
+
+def test_schedule_enabled_parses_prefixes():
+    cfg = _config_from(
+        schedule={"enabled": True, "expression": "cron(0 6 * * ? *)", "prefixes": ["t=installs/", "t=events/"]}
+    )
+    assert cfg.schedule_enabled is True
+    assert cfg.schedule_prefixes == ("t=installs/", "t=events/")
+
+
+def test_schedule_enabled_requires_prefixes():
+    try:
+        _config_from(schedule={"enabled": True, "expression": "cron(0 6 * * ? *)", "prefixes": []})
+    except ValueError as exc:
+        assert "prefixes is required" in str(exc)
+    else:
+        raise AssertionError("expected ValueError when schedule enabled with no prefixes")
+
+
+def test_schedule_params_in_cfn_and_tfvars():
+    cfg = _config_from(
+        schedule={"enabled": True, "expression": "cron(0 6 * * ? *)", "prefixes": ["t=installs/"]}
+    )
+    content = render_tfvars(cfg, "123456789012.dkr.ecr.eu-west-1.amazonaws.com/kohort-s3-sanitizer:tag")
+    assert "enable_schedule     = true" in content
+    assert 'schedule_prefixes   = ["t=installs/"]' in content
+
+
 if __name__ == "__main__":
     test_slug_from_prefix()
     test_load_client_config_example()
@@ -128,4 +160,8 @@ if __name__ == "__main__":
     test_empty_dest_prefix_allowed_for_separate_bucket()
     test_same_bucket_requires_dest_prefix()
     test_create_dest_bucket_can_be_disabled()
+    test_schedule_disabled_by_default_in_example()
+    test_schedule_enabled_parses_prefixes()
+    test_schedule_enabled_requires_prefixes()
+    test_schedule_params_in_cfn_and_tfvars()
     print("ok")
