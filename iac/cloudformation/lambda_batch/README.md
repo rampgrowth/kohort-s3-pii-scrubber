@@ -19,6 +19,7 @@ The **default deploy path** — used automatically by `kohort_sanitize.py setup`
 - Lambda scrubber + execution role
 - S3 Batch operations IAM role (`BatchOperationsRoleArn`)
 - `BatchOperationsPolicyArn` (Lambda invoke; attached to batch role)
+- **Optional** (`EnableSchedule=true`): orchestrator Lambda + EventBridge schedule for daily incremental scrubbing (`OrchestratorFunctionArn`, `ScheduleRuleName`)
 
 ## Automated client setup
 

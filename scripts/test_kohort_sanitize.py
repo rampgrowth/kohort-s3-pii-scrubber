@@ -1,4 +1,4 @@
-"""Tests for kohort_sanitize helpers."""
+﻿"""Tests for kohort_sanitize helpers."""
 
 import sys
 import tempfile
@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import yaml
 
 from kohort_sanitize import (
+    _cfn_parameter_file,
     load_client_config,
     render_tfvars,
     resolve_run_prefix,
@@ -102,6 +103,21 @@ def test_empty_dest_prefix_allowed_for_separate_bucket():
     assert cfg.dest_prefix == ""
 
 
+def test_dest_prefix_without_trailing_slash_is_normalized():
+    """Without normalization, dest_prefix="sanitized/foo" plus a relative key like
+    "dt=1/part.gz" concatenates to "sanitized/foodt=1/part.gz" instead of
+    "sanitized/foo/dt=1/part.gz" — the incremental existing-keys match against
+    the container's key mapping (which does normalize) would never hit, so
+    every scheduled run would re-scrub the whole prefix."""
+    cfg = _config_from(dest_bucket="your-company-sanitized", dest_prefix="custom")
+    assert cfg.dest_prefix == "custom/"
+
+
+def test_source_prefix_without_trailing_slash_is_normalized():
+    cfg = _config_from(source_prefix="raw-data")
+    assert cfg.source_prefix == "raw-data/"
+
+
 def test_same_bucket_requires_dest_prefix():
     try:
         _config_from(dest_bucket=None, dest_prefix="")
@@ -116,6 +132,55 @@ def test_create_dest_bucket_can_be_disabled():
     assert cfg.create_dest_bucket is False
 
 
+def test_schedule_disabled_by_default_in_example():
+    cfg = load_client_config(EXAMPLE)
+    assert cfg.schedule_enabled is False
+    assert cfg.schedule_expression == "cron(0 6 * * ? *)"
+
+
+def test_schedule_enabled_parses_prefixes():
+    cfg = _config_from(
+        schedule={"enabled": True, "expression": "cron(0 6 * * ? *)", "prefixes": ["t=installs/", "t=events/"]}
+    )
+    assert cfg.schedule_enabled is True
+    assert cfg.schedule_prefixes == ("t=installs/", "t=events/")
+
+
+def test_schedule_enabled_requires_prefixes():
+    try:
+        _config_from(schedule={"enabled": True, "expression": "cron(0 6 * * ? *)", "prefixes": []})
+    except ValueError as exc:
+        assert "prefixes is required" in str(exc)
+    else:
+        raise AssertionError("expected ValueError when schedule enabled with no prefixes")
+
+
+def test_schedule_params_in_cfn_and_tfvars():
+    cfg = _config_from(
+        schedule={"enabled": True, "expression": "cron(0 6 * * ? *)", "prefixes": ["t=installs/"]}
+    )
+    content = render_tfvars(cfg, "123456789012.dkr.ecr.eu-west-1.amazonaws.com/kohort-s3-sanitizer:tag")
+    assert "enable_schedule     = true" in content
+    assert 'schedule_prefixes   = ["t=installs/"]' in content
+
+
+def test_cfn_parameter_file_writes_and_cleans_up():
+    import json as _json
+
+    params = {"LambdaImageUri": "example/image:tag", "DestBucketName": "your-company-sanitized"}
+    with _cfn_parameter_file(params) as path:
+        assert path.exists()
+        # Not a fixed, predictable path (mitigates the symlink/TOCTOU issue with
+        # a static /tmp filename on a shared host).
+        assert "kohort-cfn-params-" in path.name
+        loaded = _json.loads(path.read_text(encoding="utf-8"))
+        assert loaded == [
+            {"ParameterKey": "LambdaImageUri", "ParameterValue": "example/image:tag"},
+            {"ParameterKey": "DestBucketName", "ParameterValue": "your-company-sanitized"},
+        ]
+    assert not path.exists()  # cleaned up on exit
+
+
 if __name__ == "__main__":
     test_slug_from_prefix()
     test_load_client_config_example()
@@ -126,6 +191,13 @@ if __name__ == "__main__":
     test_dest_prefix_defaults_to_sanitized_regardless_of_dest_bucket()
     test_dest_prefix_override()
     test_empty_dest_prefix_allowed_for_separate_bucket()
+    test_dest_prefix_without_trailing_slash_is_normalized()
+    test_source_prefix_without_trailing_slash_is_normalized()
     test_same_bucket_requires_dest_prefix()
     test_create_dest_bucket_can_be_disabled()
+    test_schedule_disabled_by_default_in_example()
+    test_schedule_enabled_parses_prefixes()
+    test_schedule_enabled_requires_prefixes()
+    test_schedule_params_in_cfn_and_tfvars()
+    test_cfn_parameter_file_writes_and_cleans_up()
     print("ok")

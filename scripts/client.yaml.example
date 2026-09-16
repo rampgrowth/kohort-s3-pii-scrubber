@@ -1,4 +1,4 @@
-# Kohort S3 Sanitizer — client configuration.
+﻿# Kohort S3 Sanitizer — client configuration.
 #
 # Getting started:
 #   1. ./scripts/bootstrap-client.sh            (copies this file to client.yaml)
@@ -77,3 +77,13 @@ batch_reports_prefix: ops/batch-reports/
 # in memory).
 lambda_memory_mb: 2048
 lambda_timeout_seconds: 300
+
+# Optional daily schedule. When enabled, setup deploys an orchestrator Lambda +
+# EventBridge rule that runs the same incremental scrub as `run` for each prefix
+# below (relative to source_prefix). Quiet days with nothing new complete with
+# no Batch job. Leave enabled: false to keep runs manual (CLI `run`).
+schedule:
+  enabled: false
+  expression: "cron(0 6 * * ? *)"   # daily 06:00 UTC
+  prefixes:
+    - t=installs/
