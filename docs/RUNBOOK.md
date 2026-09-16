@@ -145,6 +145,10 @@ Raw data stays in buckets like `kohort-raw-data`. Config holds rulesets, manifes
 | Custom manifests | `s3://kohort-sanitizer-config/ops/manifests/<job>.csv` |
 | Batch reports | `s3://kohort-sanitizer-config/ops/batch-reports/` |
 
+Each `run` writes a new manifest (one per run, never overwritten — S3 Batch pins the
+manifest ETag). Set a lifecycle expiry on `ops/manifests/` (30 days is ample) so they
+don't accumulate.
+
 ---
 
 ## Step 1 — Publish the scrubber image to your ECR

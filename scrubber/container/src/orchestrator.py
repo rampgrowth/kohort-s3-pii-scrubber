@@ -23,7 +23,7 @@ from typing import Any
 
 import boto3
 
-from run_job import resolve_prefix, run_prefix
+from run_job import resolve_prefix, run_prefix, slug_from_prefix
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -69,6 +69,10 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         raise ValueError("SCHEDULE_PREFIXES is empty; nothing to schedule")
 
     full = bool(event.get("full")) if isinstance(event, dict) else False
+    # EventBridge's rule-triggered event carries a stable "id" that is unchanged
+    # across Lambda's async retries of the same delivery, so retries reuse the
+    # same manifest key/ClientRequestToken instead of racing a fresh one.
+    event_id = event.get("id") if isinstance(event, dict) else None
 
     session = boto3.Session()
     s3 = session.client("s3")
@@ -79,6 +83,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     for raw_prefix in prefixes:
         resolved = resolve_prefix(source_prefix, raw_prefix)
         logger.info("orchestrator_prefix_start prefix=%s", resolved)
+        run_scope = f"{event_id}-{slug_from_prefix(resolved)}" if event_id else None
         result = run_prefix(
             s3_client=s3,
             s3control_client=s3control,
@@ -96,6 +101,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             lambda_arn=lambda_arn,
             full=full,
             allow_empty=True,
+            run_scope=run_scope,
             log=logger.info,
         )
         results.append(

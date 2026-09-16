@@ -13,8 +13,9 @@ scrub). With ``allow_empty=True`` an empty listing returns a result with
 
 from __future__ import annotations
 
+import hashlib
 import re
-import time
+import uuid
 from dataclasses import dataclass
 
 from manifest_core import (
@@ -89,6 +90,13 @@ def _create_batch_job(
         "Enabled": True,
         "ReportScope": "AllTasks",
     }
+    # Deterministic per manifest version: retries of the *same* triggering event
+    # (e.g. an EventBridge async retry, which resubmits with an unchanged
+    # manifest_key/etag) reuse this token so S3 Control dedupes them instead of
+    # creating duplicate jobs over the same objects. A genuinely new run writes a
+    # new manifest version first, which changes the etag and therefore the token.
+    token_source = f"{manifest_key}:{etag}"
+    client_request_token = hashlib.sha256(token_source.encode("utf-8")).hexdigest()[:64]
     response = s3control_client.create_job(
         AccountId=account_id,
         ConfirmationRequired=False,
@@ -97,7 +105,7 @@ def _create_batch_job(
         Operation={"LambdaInvoke": {"FunctionArn": lambda_arn}},
         Manifest=manifest,
         Report=report,
-        ClientRequestToken=f"scrub-{int(time.time() * 1000)}",
+        ClientRequestToken=client_request_token,
     )
     return response["JobId"]
 
@@ -121,14 +129,23 @@ def run_prefix(
     full: bool = False,
     allow_empty: bool = True,
     dry_run: bool = False,
+    run_scope: str | None = None,
     log=print,
 ) -> RunResult:
     """List ``prefix`` under ``raw_bucket``, build a manifest, and start a Batch job.
 
     ``prefix`` must already be resolved (absolute key prefix under source_prefix);
     callers use :func:`resolve_prefix`.
+
+    ``run_scope`` namespaces the manifest object so concurrent runs over the same
+    prefix (e.g. a scheduled orchestrator tick overlapping a manual CLI ``run``)
+    never share a manifest key/ETag and clobber each other's in-flight Batch job.
+    Defaults to a random scope per call (each `run_prefix` call is its own run);
+    pass a stable value (e.g. an EventBridge event id) to make retries of the
+    *same* triggering event reuse the same manifest key.
     """
-    manifest_key = f"{manifests_prefix}{slug_from_prefix(prefix)}.csv"
+    scope = run_scope or uuid.uuid4().hex[:12]
+    manifest_key = f"{manifests_prefix}{slug_from_prefix(prefix)}.{scope}.csv"
     manifest_uri = f"s3://{config_bucket}/{manifest_key}"
 
     include_globs, exclude_globs = load_ruleset_globs(ruleset_uri, s3_client)

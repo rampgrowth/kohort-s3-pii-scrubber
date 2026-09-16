@@ -31,13 +31,38 @@ def map_dest_key(source_key: str, source_prefix: str, dest_prefix: str) -> str:
     return f"{dest_prefix}{relative}" if dest_prefix else relative
 
 
-def list_existing_dest_keys(s3_client, dest_bucket: str, dest_prefix: str) -> frozenset[str]:
-    """List all keys under dest_prefix in dest_bucket. Used for incremental filtering."""
+#: Default ceiling for list_existing_dest_keys. A coarse schedule prefix (e.g.
+#: "t=installs/") only grows over time, and this listing is held entirely in
+#: memory; without a cap it can eventually exceed the orchestrator Lambda's
+#: memory limit. Override via max_keys for buckets known to need more.
+DEFAULT_MAX_EXISTING_DEST_KEYS = 2_000_000
+
+
+def list_existing_dest_keys(
+    s3_client,
+    dest_bucket: str,
+    dest_prefix: str,
+    *,
+    max_keys: int | None = DEFAULT_MAX_EXISTING_DEST_KEYS,
+) -> frozenset[str]:
+    """List all keys under dest_prefix in dest_bucket. Used for incremental filtering.
+
+    Raises RuntimeError instead of continuing past max_keys, so a prefix that has
+    grown too large to list in memory fails loudly (with a fix suggestion)
+    rather than risking an OOM later in the run. Pass max_keys=None to disable.
+    """
     keys: list[str] = []
     paginator = s3_client.get_paginator("list_objects_v2")
     for page in paginator.paginate(Bucket=dest_bucket, Prefix=normalize_prefix(dest_prefix)):
         for obj in page.get("Contents") or []:
             keys.append(obj["Key"])
+            if max_keys is not None and len(keys) > max_keys:
+                raise RuntimeError(
+                    f"s3://{dest_bucket}/{dest_prefix} has more than {max_keys} existing "
+                    "objects; incremental listing would risk exhausting memory. Narrow "
+                    "the schedule prefix (e.g. add a date partition), or pass a higher "
+                    "max_keys / run with full=True if this is expected."
+                )
     return frozenset(keys)
 
 

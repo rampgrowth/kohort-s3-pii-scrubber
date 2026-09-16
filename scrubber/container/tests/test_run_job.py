@@ -161,6 +161,42 @@ def test_slug_from_prefix():
     assert run_job.slug_from_prefix("src/t=installs/dt=2025-09-28/") == "src-t=installs-dt=2025-09-28"
 
 
+def test_run_prefix_concurrent_runs_use_distinct_manifest_keys():
+    """Two concurrent runs over the same prefix (e.g. scheduled + manual) must not
+    write to the same manifest key, or one run's in-flight Batch job ETag stops
+    matching once the other overwrites the manifest."""
+    s3 = _FakeS3(source_keys=["src/t=installs/dt=1/part-0.gz"])
+    s3control = _FakeS3Control()
+    result_a = _run(s3, s3control)
+    result_b = _run(s3, s3control)
+    assert result_a.manifest_uri != result_b.manifest_uri
+
+
+def test_run_prefix_stable_run_scope_reuses_manifest_key():
+    """A stable run_scope (e.g. an EventBridge event id) makes retries of the same
+    triggering event reuse the same manifest key."""
+    s3 = _FakeS3(source_keys=["src/t=installs/dt=1/part-0.gz"])
+    s3control = _FakeS3Control()
+    result_a = _run(s3, s3control, run_scope="event-abc")
+    result_b = _run(s3, s3control, run_scope="event-abc")
+    assert result_a.manifest_uri == result_b.manifest_uri
+
+
+def test_create_batch_job_token_deterministic_for_same_manifest():
+    """ClientRequestToken must be stable for the same manifest key+ETag so
+    S3 Control can dedupe retries, but differ when the manifest changes."""
+    s3 = _FakeS3(source_keys=["src/t=installs/dt=1/part-0.gz"])
+    s3control = _FakeS3Control()
+    _run(s3, s3control, run_scope="event-abc")
+    _run(s3, s3control, run_scope="event-abc")
+    tokens = [job["ClientRequestToken"] for job in s3control.jobs]
+    assert tokens[0] == tokens[1]
+
+    s3control2 = _FakeS3Control()
+    _run(s3, s3control2, run_scope="event-xyz")
+    assert s3control2.jobs[0]["ClientRequestToken"] != tokens[0]
+
+
 # --- orchestrator ---
 
 def test_orchestrator_loops_prefixes_and_aggregates():
@@ -233,6 +269,9 @@ if __name__ == "__main__":
     test_run_prefix_dry_run_creates_no_job()
     test_resolve_prefix_relative_and_absolute()
     test_slug_from_prefix()
+    test_run_prefix_concurrent_runs_use_distinct_manifest_keys()
+    test_run_prefix_stable_run_scope_reuses_manifest_key()
+    test_create_batch_job_token_deterministic_for_same_manifest()
     test_orchestrator_loops_prefixes_and_aggregates()
     test_parse_prefixes_json_and_csv()
     print("ok")

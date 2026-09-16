@@ -11,14 +11,17 @@ Client driver for Kohort S3 Sanitizer: one-time setup and per-prefix scrub jobs.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
+import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CFN_TEMPLATE = REPO_ROOT / "iac/cloudformation/lambda_batch/template.yaml"
@@ -91,10 +94,10 @@ def load_client_config(path: Path) -> ClientConfig:
         terraform_dir = (REPO_ROOT / terraform_dir).resolve()
 
     raw_bucket = str(data["raw_bucket"])
-    source_prefix = str(data["source_prefix"])
+    source_prefix = _ensure_trailing_slash_or_empty(str(data["source_prefix"]))
     dest_bucket = str(data.get("dest_bucket") or raw_bucket)
     dest_prefix_raw = data.get("dest_prefix")
-    dest_prefix = (
+    dest_prefix = _ensure_trailing_slash_or_empty(
         str(dest_prefix_raw) if dest_prefix_raw is not None else f"sanitized/{source_prefix}"
     )
     if dest_bucket == raw_bucket and not dest_prefix:
@@ -159,6 +162,36 @@ def _ensure_trailing_slash(prefix: str) -> str:
     return prefix if prefix.endswith("/") else f"{prefix}/"
 
 
+@contextlib.contextmanager
+def _cfn_parameter_file(params: dict[str, str]) -> Iterator[Path]:
+    """Write a CFN parameter-overrides JSON file to a private, securely created
+    temp file (not a fixed /tmp path), so a symlink planted at a predictable
+    path on a shared/CI host can't redirect the write or the later read."""
+    fd, name = tempfile.mkstemp(prefix="kohort-cfn-params-", suffix=".json")
+    path = Path(name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump([{"ParameterKey": k, "ParameterValue": v} for k, v in params.items()], fh)
+        yield path
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def _ensure_trailing_slash_or_empty(prefix: str) -> str:
+    """Like _ensure_trailing_slash, but leaves an empty prefix (bucket root) alone.
+
+    Mirrors the Terraform locals.tf normalization for source_prefix/dest_prefix,
+    so a CLI-driven `run` computes the same destination key as the container
+    (config.py normalizes DEST_PREFIX/SOURCE_PREFIX the same way). Without this,
+    an unslashed dest_prefix like "sanitized/foo" would compute
+    "sanitized/foodt=1/..." instead of "sanitized/foo/dt=1/...", breaking the
+    incremental existing-keys match.
+    """
+    if not prefix:
+        return prefix
+    return _ensure_trailing_slash(prefix)
+
+
 def resolve_run_prefix(cfg: ClientConfig, prefix: str) -> str:
     """Resolve a run prefix against source_prefix.
 
@@ -186,8 +219,6 @@ def _session(cfg: ClientConfig):
 
 
 def _aws_env(cfg: ClientConfig) -> dict[str, str]:
-    import os
-
     env = os.environ.copy()
     if cfg.aws_profile:
         env["AWS_PROFILE"] = cfg.aws_profile
@@ -301,33 +332,28 @@ def cmd_deploy_image_mirror_stack(cfg: ClientConfig) -> str:
         "ImageTag": cfg.image_tag,
         "CreateEcrRepo": create_repo,
     }
-    param_file = Path("/tmp/kohort-image-mirror-cfn-params.json")
-    param_file.write_text(
-        json.dumps([{"ParameterKey": k, "ParameterValue": v} for k, v in params.items()]),
-        encoding="utf-8",
-    )
-
     print(f"Deploying image mirror stack: {stack}")
-    result = _run(
-        [
-            "aws",
-            "cloudformation",
-            "deploy",
-            "--stack-name",
-            stack,
-            "--template-file",
-            str(IMAGE_MIRROR_CFN),
-            "--parameter-overrides",
-            f"file://{param_file}",
-            "--capabilities",
-            "CAPABILITY_NAMED_IAM",
-            "--no-fail-on-empty-changeset",
-            "--region",
-            cfg.region,
-        ],
-        cfg,
-        check=False,
-    )
+    with _cfn_parameter_file(params) as param_file:
+        result = _run(
+            [
+                "aws",
+                "cloudformation",
+                "deploy",
+                "--stack-name",
+                stack,
+                "--template-file",
+                str(IMAGE_MIRROR_CFN),
+                "--parameter-overrides",
+                f"file://{param_file}",
+                "--capabilities",
+                "CAPABILITY_NAMED_IAM",
+                "--no-fail-on-empty-changeset",
+                "--region",
+                cfg.region,
+            ],
+            cfg,
+            check=False,
+        )
     if result.returncode != 0:
         output = result.stderr or result.stdout
         print(output, file=sys.stderr)
@@ -657,33 +683,28 @@ def cmd_deploy_stack(cfg: ClientConfig, image_uri: str) -> None:
         "SchedulePrefixes": json.dumps(list(cfg.schedule_prefixes)),
     }
 
-    param_file = Path("/tmp/kohort-sanitize-cfn-params.json")
-    param_file.write_text(
-        json.dumps([{"ParameterKey": k, "ParameterValue": v} for k, v in params.items()]),
-        encoding="utf-8",
-    )
-
     print(f"Deploying CloudFormation stack: {cfg.stack_name}")
-    result = _run(
-        [
-            "aws",
-            "cloudformation",
-            "deploy",
-            "--stack-name",
-            cfg.stack_name,
-            "--template-file",
-            str(CFN_TEMPLATE),
-            "--parameter-overrides",
-            f"file://{param_file}",
-            "--capabilities",
-            "CAPABILITY_NAMED_IAM",
-            "--no-fail-on-empty-changeset",
-            "--region",
-            cfg.region,
-        ],
-        cfg,
-        check=False,
-    )
+    with _cfn_parameter_file(params) as param_file:
+        result = _run(
+            [
+                "aws",
+                "cloudformation",
+                "deploy",
+                "--stack-name",
+                cfg.stack_name,
+                "--template-file",
+                str(CFN_TEMPLATE),
+                "--parameter-overrides",
+                f"file://{param_file}",
+                "--capabilities",
+                "CAPABILITY_NAMED_IAM",
+                "--no-fail-on-empty-changeset",
+                "--region",
+                cfg.region,
+            ],
+            cfg,
+            check=False,
+        )
     if result.returncode != 0:
         print(result.stderr or result.stdout, file=sys.stderr)
         raise RuntimeError(f"CloudFormation deploy failed (exit {result.returncode})")
@@ -793,8 +814,6 @@ def cmd_setup(
 
 
 def cmd_run(cfg: ClientConfig, prefix: str, *, dry_run: bool, full: bool = False, config_path: Path | None = None) -> None:
-    import os
-
     if cfg.aws_profile:
         os.environ["AWS_PROFILE"] = cfg.aws_profile
 

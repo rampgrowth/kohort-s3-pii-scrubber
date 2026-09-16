@@ -9,6 +9,19 @@ resource "aws_cloudwatch_log_group" "orchestrator" {
   tags              = local.common_tags
 }
 
+# enable_schedule requires a batch role ARN one way or another: either this
+# module creates one (create_batch_operations_role = true, the default) or the
+# caller must supply batch_role_arn_override.
+resource "terraform_data" "orchestrator_requires_batch_role" {
+  count = var.enable_schedule ? 1 : 0
+  lifecycle {
+    precondition {
+      condition     = local.batch_role_arn != null
+      error_message = "enable_schedule=true requires either create_batch_operations_role=true or batch_role_arn_override to be set."
+    }
+  }
+}
+
 data "aws_iam_policy_document" "orchestrator" {
   count = var.enable_schedule ? 1 : 0
 
@@ -62,7 +75,21 @@ data "aws_iam_policy_document" "orchestrator" {
     sid       = "PassBatchRole"
     effect    = "Allow"
     actions   = ["iam:PassRole"]
-    resources = [aws_iam_role.batch_operations[0].arn]
+    resources = [local.batch_role_arn]
+  }
+
+  dynamic "statement" {
+    for_each = var.kms_key_arn != null ? [1] : []
+    content {
+      sid    = "KMS"
+      effect = "Allow"
+      actions = [
+        "kms:Decrypt",
+        "kms:Encrypt",
+        "kms:GenerateDataKey",
+      ]
+      resources = [var.kms_key_arn]
+    }
   }
 }
 
@@ -110,7 +137,7 @@ resource "aws_lambda_function" "orchestrator" {
       CONFIG_BUCKET         = local.ops_bucket
       MANIFESTS_PREFIX      = local.manifests_prefix
       BATCH_REPORTS_PREFIX  = local.batch_reports_prefix
-      BATCH_ROLE_ARN        = aws_iam_role.batch_operations[0].arn
+      BATCH_ROLE_ARN        = local.batch_role_arn
       SCRUBBER_FUNCTION_ARN = aws_lambda_function.scrubber.arn
       SCHEDULE_PREFIXES     = jsonencode(var.schedule_prefixes)
     }

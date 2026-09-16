@@ -99,6 +99,17 @@ Parameters:
     Default: 900
     Description: Timeout for the orchestrator Lambda.
 
+Rules:
+  # EnableSchedule=true with no SchedulePrefixes deploys cleanly (SchedulePrefixes
+  # has no required-together validation at the parameter level) but the
+  # orchestrator raises "SCHEDULE_PREFIXES is empty" on every invocation. Fail
+  # the deploy up front instead of failing silently on the daily schedule.
+  ScheduleRequiresPrefixes:
+    RuleCondition: !Equals [!Ref EnableSchedule, "true"]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref SchedulePrefixes, ""]]
+        AssertDescription: "SchedulePrefixes is required when EnableSchedule is true."
+
 Conditions:
   CreateDestBucket: !Equals [!Ref CreateDestBucket, "true"]
   UseKms: !Not [!Equals [!Ref KmsKeyArn, ""]]
@@ -305,6 +316,16 @@ Resources:
                 Action:
                   - iam:PassRole
                 Resource: !GetAtt BatchOperationsRole.Arn
+              - !If
+                - UseKms
+                - Sid: Kms
+                  Effect: Allow
+                  Action:
+                    - kms:Decrypt
+                    - kms:Encrypt
+                    - kms:GenerateDataKey
+                  Resource: !Ref KmsKeyArn
+                - !Ref AWS::NoValue
 
   OrchestratorFunction:
     Type: AWS::Lambda::Function
