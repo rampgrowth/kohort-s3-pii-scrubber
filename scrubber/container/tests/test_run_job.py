@@ -255,6 +255,35 @@ def test_orchestrator_loops_prefixes_and_aggregates():
     assert len(out["results"]) == 2
 
 
+def test_tick_identity_stable_across_redelivery():
+    """Same tick redelivered (Lambda async retry, or an EventBridge delivery
+    retry) must yield the same scope, so the retry reuses the manifest key and
+    Batch dedupe token rather than creating a duplicate job."""
+    event = {
+        "id": "11111111-1111-1111-1111-111111111111",
+        "time": "2026-09-23T06:00:00Z",
+        "resources": ["arn:aws:events:eu-west-1:111122223333:rule/daily"],
+    }
+    # A redelivery of the same tick may carry a different envelope id; AWS does
+    # not document id as stable across async retries, so it must not matter.
+    redelivered = dict(event, id="22222222-2222-2222-2222-222222222222")
+    assert orchestrator._tick_identity(event) == orchestrator._tick_identity(redelivered)
+
+
+def test_tick_identity_differs_across_ticks():
+    base = {"resources": ["arn:aws:events:eu-west-1:111122223333:rule/daily"]}
+    today = orchestrator._tick_identity(dict(base, time="2026-09-23T06:00:00Z"))
+    tomorrow = orchestrator._tick_identity(dict(base, time="2026-09-24T06:00:00Z"))
+    assert today != tomorrow
+
+
+def test_tick_identity_none_without_envelope():
+    """Manual/test invocations get no scope, so each run is its own."""
+    assert orchestrator._tick_identity({}) is None
+    assert orchestrator._tick_identity({"time": "2026-09-23T06:00:00Z"}) is None
+    assert orchestrator._tick_identity(None) is None
+
+
 def test_parse_prefixes_json_and_csv():
     assert orchestrator._parse_prefixes('["a/", "b/"]') == ["a/", "b/"]
     assert orchestrator._parse_prefixes("a/, b/") == ["a/", "b/"]
@@ -272,6 +301,9 @@ if __name__ == "__main__":
     test_run_prefix_concurrent_runs_use_distinct_manifest_keys()
     test_run_prefix_stable_run_scope_reuses_manifest_key()
     test_create_batch_job_token_deterministic_for_same_manifest()
+    test_tick_identity_stable_across_redelivery()
+    test_tick_identity_differs_across_ticks()
+    test_tick_identity_none_without_envelope()
     test_orchestrator_loops_prefixes_and_aggregates()
     test_parse_prefixes_json_and_csv()
     print("ok")

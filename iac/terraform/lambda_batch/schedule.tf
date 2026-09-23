@@ -71,11 +71,17 @@ data "aws_iam_policy_document" "orchestrator" {
     resources = ["*"]
   }
 
-  statement {
-    sid       = "PassBatchRole"
-    effect    = "Allow"
-    actions   = ["iam:PassRole"]
-    resources = [local.batch_role_arn]
+  # Guarded so a null ARN surfaces only as the precondition error in
+  # terraform_data.orchestrator_requires_batch_role, rather than also as an
+  # opaque "Null value found in list" from this data source.
+  dynamic "statement" {
+    for_each = local.batch_role_arn != null ? [1] : []
+    content {
+      sid       = "PassBatchRole"
+      effect    = "Allow"
+      actions   = ["iam:PassRole"]
+      resources = [local.batch_role_arn]
+    }
   }
 
   dynamic "statement" {

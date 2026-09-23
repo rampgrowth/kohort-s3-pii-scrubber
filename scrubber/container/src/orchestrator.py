@@ -16,6 +16,7 @@ Configuration comes from environment variables set by the IaC:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -52,6 +53,34 @@ def _parse_prefixes(raw: str) -> list[str]:
     raise ValueError(f"SCHEDULE_PREFIXES must be a JSON list or comma-separated string, got: {raw!r}")
 
 
+def _tick_identity(event: Any) -> str | None:
+    """Stable identifier for one schedule tick, used to scope manifest keys.
+
+    Retries must reuse the scope of the attempt they are retrying, so the run
+    writes to the same manifest key and derives the same Batch
+    ClientRequestToken instead of creating a duplicate job.
+
+    Derived from the rule ARN (``resources[0]``) plus the scheduled ``time``,
+    both properties of the tick itself, so the value is identical across any
+    redelivery of that tick by construction. Note that AWS does not document
+    the envelope's ``id`` as stable across Lambda async retries, so it is
+    deliberately not used here; ``time`` is the tick time and does not vary
+    between attempts.
+
+    Returns None for a manual/test invocation with no EventBridge envelope;
+    callers then fall back to a fresh random scope per run.
+    """
+    if not isinstance(event, dict):
+        return None
+    when = event.get("time")
+    resources = event.get("resources")
+    rule_arn = resources[0] if isinstance(resources, list) and resources else None
+    if not when or not rule_arn:
+        return None
+    digest = hashlib.sha256(f"{rule_arn}|{when}".encode("utf-8")).hexdigest()
+    return digest[:16]
+
+
 def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     raw_bucket = _require_env("RAW_BUCKET")
     source_prefix = os.environ.get("SOURCE_PREFIX", "")
@@ -69,10 +98,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         raise ValueError("SCHEDULE_PREFIXES is empty; nothing to schedule")
 
     full = bool(event.get("full")) if isinstance(event, dict) else False
-    # EventBridge's rule-triggered event carries a stable "id" that is unchanged
-    # across Lambda's async retries of the same delivery, so retries reuse the
-    # same manifest key/ClientRequestToken instead of racing a fresh one.
-    event_id = event.get("id") if isinstance(event, dict) else None
+    tick_id = _tick_identity(event)
 
     session = boto3.Session()
     s3 = session.client("s3")
@@ -83,7 +109,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     for raw_prefix in prefixes:
         resolved = resolve_prefix(source_prefix, raw_prefix)
         logger.info("orchestrator_prefix_start prefix=%s", resolved)
-        run_scope = f"{event_id}-{slug_from_prefix(resolved)}" if event_id else None
+        run_scope = f"{tick_id}-{slug_from_prefix(resolved)}" if tick_id else None
         result = run_prefix(
             s3_client=s3,
             s3control_client=s3control,
