@@ -44,6 +44,20 @@ data "aws_iam_policy_document" "orchestrator" {
   }
 
   statement {
+    sid     = "ListManifests"
+    effect  = "Allow"
+    actions = ["s3:ListBucket"]
+    resources = [
+      "arn:aws:s3:::${local.ops_bucket}",
+    ]
+    condition {
+      test     = "StringLike"
+      variable = "s3:prefix"
+      values   = ["${local.manifests_prefix}*"]
+    }
+  }
+
+  statement {
     sid     = "ReadRuleset"
     effect  = "Allow"
     actions = ["s3:GetObject"]

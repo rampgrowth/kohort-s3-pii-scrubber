@@ -1,5 +1,6 @@
 ﻿"""Unit tests for the shared run core and orchestrator loop."""
 
+import hashlib
 import os
 import sys
 from pathlib import Path
@@ -25,6 +26,8 @@ class _FakeS3:
         self._source_keys = list(source_keys)
         self._dest_keys = list(dest_keys)
         self.put_objects = []
+        self._stored = {}
+        self.paginate_calls = 0
 
     def get_paginator(self, method):
         assert method == "list_objects_v2"
@@ -37,9 +40,16 @@ class _FakeS3:
 
     def put_object(self, **kwargs):
         self.put_objects.append(kwargs)
+        self._stored[(kwargs["Bucket"], kwargs["Key"])] = kwargs
+
+    def list_objects_v2(self, Bucket, Prefix, MaxKeys=1000):
+        keys = sorted(k for (b, k) in self._stored if b == Bucket and k.startswith(Prefix))
+        return {"Contents": [{"Key": k} for k in keys[:MaxKeys]]}
 
     def head_object(self, Bucket, Key):
-        return {"ETag": '"abc123"'}
+        stored = self._stored[(Bucket, Key)]
+        etag = hashlib.md5(stored["Body"]).hexdigest()
+        return {"ETag": f'"{etag}"', "Metadata": stored.get("Metadata", {})}
 
 
 class _RoutingPaginator:
@@ -47,6 +57,7 @@ class _RoutingPaginator:
         self._s3 = s3
 
     def paginate(self, Bucket, Prefix):
+        self._s3.paginate_calls += 1
         # dest listing uses the dest bucket; source uses raw bucket.
         if Bucket == "dest-bucket":
             keys = self._s3._dest_keys
@@ -197,6 +208,35 @@ def test_create_batch_job_token_deterministic_for_same_manifest():
     assert s3control2.jobs[0]["ClientRequestToken"] != tokens[0]
 
 
+def test_run_prefix_retry_reuses_manifest_after_listing_changes():
+    """A retried tick must reuse the first attempt's manifest even if the first
+    job has since scrubbed some objects (which would change a fresh listing),
+    so the dedupe token is unchanged and the in-flight manifest is not rewritten."""
+    s3 = _FakeS3(source_keys=["src/t=installs/dt=1/part-0.gz", "src/t=installs/dt=2/part-0.gz"])
+    s3control = _FakeS3Control()
+    first = _run(s3, s3control, run_scope="tick-1")
+    listings_after_first = s3.paginate_calls
+
+    s3._dest_keys.append("sanitized/t=installs/dt=1/part-0.gz")
+    retry = _run(s3, s3control, run_scope="tick-1")
+
+    assert len(s3.put_objects) == 1  # manifest not rewritten
+    assert s3.paginate_calls == listings_after_first  # no re-listing
+    assert retry.manifest_uri == first.manifest_uri
+    assert retry.matching_objects == first.matching_objects == 2
+    tokens = [job["ClientRequestToken"] for job in s3control.jobs]
+    assert tokens[0] == tokens[1]
+
+
+def test_run_prefix_without_run_scope_never_reuses():
+    """CLI runs (no run_scope) always list fresh and write their own manifest."""
+    s3 = _FakeS3(source_keys=["src/t=installs/dt=1/part-0.gz"])
+    s3control = _FakeS3Control()
+    _run(s3, s3control)
+    _run(s3, s3control)
+    assert len(s3.put_objects) == 2
+
+
 # --- orchestrator ---
 
 def test_orchestrator_loops_prefixes_and_aggregates():
@@ -301,6 +341,8 @@ if __name__ == "__main__":
     test_run_prefix_concurrent_runs_use_distinct_manifest_keys()
     test_run_prefix_stable_run_scope_reuses_manifest_key()
     test_create_batch_job_token_deterministic_for_same_manifest()
+    test_run_prefix_retry_reuses_manifest_after_listing_changes()
+    test_run_prefix_without_run_scope_never_reuses()
     test_tick_identity_stable_across_redelivery()
     test_tick_identity_differs_across_ticks()
     test_tick_identity_none_without_envelope()

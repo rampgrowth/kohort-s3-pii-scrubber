@@ -143,7 +143,9 @@ def iter_manifest_rows(
                 return
 
 
-def write_manifest(lines: list[str], output: str, s3_client) -> None:
+def write_manifest(
+    lines: list[str], output: str, s3_client, *, metadata: dict[str, str] | None = None
+) -> None:
     body = "\n".join(lines)
     if body:
         body += "\n"
@@ -152,12 +154,15 @@ def write_manifest(lines: list[str], output: str, s3_client) -> None:
         parsed = urlparse(output)
         if not parsed.netloc or not parsed.path.lstrip("/"):
             raise ValueError(f"Invalid output URI: {output}")
-        s3_client.put_object(
+        put_kwargs = dict(
             Bucket=parsed.netloc,
             Key=parsed.path.lstrip("/"),
             Body=body.encode("utf-8"),
             ContentType="text/csv",
         )
+        if metadata:
+            put_kwargs["Metadata"] = metadata
+        s3_client.put_object(**put_kwargs)
         return
 
     path = Path(output)

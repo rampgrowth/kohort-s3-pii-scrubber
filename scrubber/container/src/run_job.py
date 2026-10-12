@@ -63,6 +63,25 @@ def _scoped_dest_list_prefix(prefix: str, source_prefix: str, dest_prefix: str) 
     return f"{dest_prefix}{relative}" if dest_prefix else relative
 
 
+_ROW_COUNT_METADATA_KEY = "row-count"
+
+
+def _existing_manifest_row_count(s3_client, bucket: str, key: str) -> int | None:
+    """Row count of an already-written manifest at ``key``, or None if absent.
+
+    Uses a prefix-scoped listing rather than HeadObject: without s3:ListBucket on
+    the bucket, HeadObject on a missing key returns 403 instead of 404.
+    """
+    response = s3_client.list_objects_v2(Bucket=bucket, Prefix=key, MaxKeys=1)
+    if not any(obj.get("Key") == key for obj in response.get("Contents", [])):
+        return None
+    metadata = s3_client.head_object(Bucket=bucket, Key=key).get("Metadata", {})
+    try:
+        return int(metadata.get(_ROW_COUNT_METADATA_KEY, "0"))
+    except ValueError:
+        return 0
+
+
 def _create_batch_job(
     *,
     s3_client,
@@ -143,10 +162,41 @@ def run_prefix(
     Defaults to a random scope per call (each `run_prefix` call is its own run);
     pass a stable value (e.g. an EventBridge event id) to make retries of the
     *same* triggering event reuse the same manifest key.
+
+    With a stable ``run_scope``, a manifest that already exists is reused as-is
+    (no re-listing, no re-write). Re-listing on retry would see objects the first
+    job already scrubbed, produce a different manifest/ETag and therefore a new
+    dedupe token (duplicate job), and the overwrite would break the first job's
+    ETag check.
     """
     scope = run_scope or uuid.uuid4().hex[:12]
     manifest_key = f"{manifests_prefix}{slug_from_prefix(prefix)}.{scope}.csv"
     manifest_uri = f"s3://{config_bucket}/{manifest_key}"
+
+    job_kwargs = dict(
+        s3_client=s3_client,
+        s3control_client=s3control_client,
+        account_id=account_id,
+        config_bucket=config_bucket,
+        manifest_key=manifest_key,
+        batch_reports_prefix=batch_reports_prefix,
+        batch_role_arn=batch_role_arn,
+        lambda_arn=lambda_arn,
+    )
+
+    if run_scope and not dry_run:
+        existing_rows = _existing_manifest_row_count(s3_client, config_bucket, manifest_key)
+        if existing_rows is not None:
+            log(f"Reusing existing manifest {manifest_uri} for run_scope={run_scope!r}")
+            job_id = _create_batch_job(**job_kwargs)
+            log(f"Batch job created: {job_id}")
+            return RunResult(
+                prefix=prefix,
+                matching_objects=existing_rows,
+                job_id=job_id,
+                skipped_empty=False,
+                manifest_uri=manifest_uri,
+            )
 
     include_globs, exclude_globs = load_ruleset_globs(ruleset_uri, s3_client)
     if not exclude_globs and not include_globs:
@@ -200,19 +250,15 @@ def run_prefix(
             manifest_uri=None,
         )
 
-    write_manifest(rows, manifest_uri, s3_client)
+    write_manifest(
+        rows,
+        manifest_uri,
+        s3_client,
+        metadata={_ROW_COUNT_METADATA_KEY: str(len(rows))},
+    )
     log(f"Wrote {len(rows)} rows to {manifest_uri}")
 
-    job_id = _create_batch_job(
-        s3_client=s3_client,
-        s3control_client=s3control_client,
-        account_id=account_id,
-        config_bucket=config_bucket,
-        manifest_key=manifest_key,
-        batch_reports_prefix=batch_reports_prefix,
-        batch_role_arn=batch_role_arn,
-        lambda_arn=lambda_arn,
-    )
+    job_id = _create_batch_job(**job_kwargs)
     log(f"Batch job created: {job_id}")
 
     return RunResult(

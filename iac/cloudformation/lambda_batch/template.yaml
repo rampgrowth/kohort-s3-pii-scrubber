@@ -295,6 +295,14 @@ Resources:
                 Action:
                   - s3:ListBucket
                 Resource: !Sub arn:aws:s3:::${DestBucketName}
+              - Sid: ListManifests
+                Effect: Allow
+                Action:
+                  - s3:ListBucket
+                Resource: !Sub arn:aws:s3:::${RulesetBucketName}
+                Condition:
+                  StringLike:
+                    s3:prefix: !Sub ${ManifestsPrefix}*
               - Sid: ReadRuleset
                 Effect: Allow
                 Action:
