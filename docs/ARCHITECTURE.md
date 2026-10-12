@@ -4,7 +4,10 @@
 
 ```mermaid
 flowchart LR
-  rawS3[RawS3Bucket] --> manifestGen[PrefixManifest]
+  schedule[EventBridgeSchedule] -.optional.-> orchestrator[OrchestratorLambda]
+  cli[CLIrun] --> manifestGen[PrefixManifest]
+  orchestrator --> manifestGen
+  rawS3[RawS3Bucket] --> manifestGen
   manifestGen --> manifest[BatchManifestCSV]
   manifest --> batchJob[S3BatchOperations]
   batchJob --> lambda[LambdaScrubber]
@@ -13,10 +16,12 @@ flowchart LR
   ruleset[RulesetS3] --> lambda
 ```
 
-1. A **prefix manifest** (CSV of bucket + key) is generated or uploaded to the config bucket.
+1. A **prefix manifest** (CSV of bucket + key) is generated, either by the CLI (`run`) or the scheduled **orchestrator Lambda**, and uploaded to the config bucket.
 2. **S3 Batch Operations** reads the manifest and invokes the scrubber **Lambda** once per object.
 3. Lambda reads the source object, drops configured columns, writes to the sanitized bucket with the same relative key (optionally under a different prefix).
 4. Batch writes a **completion report** listing successes and failures.
+
+The orchestrator and scrubber share **one container image** with different entrypoints (`orchestrator.lambda_handler` vs `handler.lambda_handler`). The manifest/listing logic is shared code (`manifest_core.py` + `run_job.py`) used by both the CLI and the orchestrator, so scheduled and manual runs behave identically. Scheduling is optional and off by default.
 
 ## Design constraints
 
@@ -28,10 +33,12 @@ flowchart LR
 
 | Component | Responsibility |
 |-----------|----------------|
-| Lambda container (`scrubber/container`) | Format detection, rules resolution, S3 read/write |
+| Lambda container (`scrubber/container`) | Format detection, rules resolution, S3 read/write (scrubber); daily manifest + Batch job creation (orchestrator) |
+| Shared run core (`manifest_core.py`, `run_job.py`) | Listing, incremental skip, manifest write, Batch job creation — shared by CLI and orchestrator |
 | Ruleset (S3) | Column drop lists per prefix |
-| Terraform / CloudFormation | IAM, Lambda, optional buckets, batch role |
-| S3 Batch job (per backfill) | Fan-out orchestration and reporting |
+| Terraform / CloudFormation | IAM, Lambda, optional buckets, batch role, optional schedule (orchestrator + EventBridge) |
+| S3 Batch job (per run) | Fan-out orchestration and reporting |
+| Orchestrator + EventBridge (optional) | Daily incremental scrub without manual `run` |
 
 ## Performance and cost
 

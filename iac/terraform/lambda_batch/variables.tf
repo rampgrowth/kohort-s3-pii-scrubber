@@ -76,3 +76,33 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "enable_schedule" {
+  description = "Deploy the daily orchestrator Lambda + EventBridge schedule."
+  type        = bool
+  default     = false
+}
+
+variable "schedule_expression" {
+  description = "EventBridge schedule expression for the orchestrator (default daily 06:00 UTC)."
+  type        = string
+  default     = "cron(0 6 * * ? *)"
+}
+
+variable "schedule_prefixes" {
+  description = "Prefixes the orchestrator scrubs each run, relative to source_prefix."
+  type        = list(string)
+  default     = []
+}
+
+variable "orchestrator_memory_mb" {
+  description = "Memory for the orchestrator Lambda (listing-heavy, not transform-heavy)."
+  type        = number
+  default     = 1024
+}
+
+variable "orchestrator_timeout_seconds" {
+  description = "Timeout for the orchestrator Lambda."
+  type        = number
+  default     = 900
+}

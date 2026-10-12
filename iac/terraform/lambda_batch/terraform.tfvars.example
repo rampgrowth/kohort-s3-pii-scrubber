@@ -1,4 +1,4 @@
-# Copy to terraform.tfvars and edit. Do not commit terraform.tfvars (gitignored).
+﻿# Copy to terraform.tfvars and edit. Do not commit terraform.tfvars (gitignored).
 #
 # Config bucket (rulesets + ops): one per account, e.g. kohort-sanitizer-config
 # Raw bucket: client data, e.g. kohort-raw-data
@@ -26,3 +26,11 @@ create_batch_operations_role = true
 # reserved_concurrent_executions = 500
 # lambda_memory_mb               = 2048
 # lambda_timeout_seconds         = 300
+
+# Optional daily schedule: orchestrator Lambda + EventBridge rule that runs the
+# incremental scrub for each prefix (relative to source_prefix).
+# enable_schedule     = true
+# schedule_expression = "cron(0 6 * * ? *)"   # daily 06:00 UTC
+# schedule_prefixes   = ["t=installs/"]
+# orchestrator_memory_mb       = 1024
+# orchestrator_timeout_seconds = 900

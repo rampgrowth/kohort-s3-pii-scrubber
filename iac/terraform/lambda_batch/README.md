@@ -1,4 +1,4 @@
-# Terraform: S3 Batch + Lambda scrubber
+﻿# Terraform: S3 Batch + Lambda scrubber
 
 Deploys:
 
@@ -6,6 +6,7 @@ Deploys:
 - Optional sanitized output bucket (`create_dest_bucket`)
 - Policy allowing S3 Batch to invoke Lambda
 - **S3 Batch Operations IAM role** (read manifests, write reports, invoke Lambda)
+- Optional daily schedule (`enable_schedule`): orchestrator Lambda + EventBridge rule that runs the incremental scrub per `schedule_prefixes`
 
 Batch jobs use **prefix manifests** (`scripts/generate_batch_manifest.py` or `kohort_sanitize.py run`), not S3 Inventory.
 

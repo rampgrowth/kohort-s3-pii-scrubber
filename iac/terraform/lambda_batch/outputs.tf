@@ -1,4 +1,4 @@
-﻿output "lambda_function_name" {
+output "lambda_function_name" {
   description = "Scrubber Lambda function name."
   value       = aws_lambda_function.scrubber.function_name
 }
@@ -31,4 +31,14 @@ output "batch_operations_role_arn" {
 output "ops_bucket_name" {
   description = "Bucket used for manifests and batch reports."
   value       = local.ops_bucket
+}
+
+output "orchestrator_function_arn" {
+  description = "Scheduled orchestrator Lambda ARN (when enable_schedule is true)."
+  value       = try(aws_lambda_function.orchestrator[0].arn, null)
+}
+
+output "schedule_rule_name" {
+  description = "EventBridge schedule rule name (when enable_schedule is true)."
+  value       = try(aws_cloudwatch_event_rule.schedule[0].name, null)
 }
